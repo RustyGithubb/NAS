@@ -9,10 +9,11 @@
 mod backend;
 mod key;
 mod sampler;
+mod sites;
 
 use std::sync::{Arc, Mutex};
 
-use nas_proto::{Action, ActionResult, Services, Status};
+use nas_proto::{Action, ActionResult, Services, SiteAction, Sites, Status};
 use serde::Serialize;
 
 /// Réponse : code HTTP et corps JSON.
@@ -43,6 +44,7 @@ fn main() {
     let status = Arc::new(Mutex::new(Status::default()));
     sampler::spawn(status.clone());
     let backend = backend::detect();
+    let sites = sites::detect();
 
     let server = match tiny_http::Server::http(&addr) {
         Ok(s) => s,
@@ -61,13 +63,14 @@ fn main() {
 
     for request in server.incoming_requests() {
         let auth = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str());
-        let (code, body) = if key::authorized(auth, &key) { route(request.method(), request.url(), &status, backend.as_ref()) } else { error(401, "clé d'accès refusée") };
+        let (code, body) =
+            if key::authorized(auth, &key) { route(request.method(), request.url(), &status, backend.as_ref(), sites.as_ref()) } else { error(401, "clé d'accès refusée") };
         let header = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("en-tête valide");
         let _ = request.respond(tiny_http::Response::from_string(body).with_status_code(code).with_header(header));
     }
 }
 
-fn route(method: &tiny_http::Method, url: &str, status: &Mutex<Status>, backend: &dyn backend::Backend) -> Reply {
+fn route(method: &tiny_http::Method, url: &str, status: &Mutex<Status>, backend: &dyn backend::Backend, sites: &dyn sites::SitesBackend) -> Reply {
     use tiny_http::Method::{Get, Post};
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -95,6 +98,20 @@ fn route(method: &tiny_http::Method, url: &str, status: &Mutex<Status>, backend:
             match backend.logs(unit, after.as_deref()) {
                 Ok(logs) => json(200, &logs),
                 Err(e) => error(500, &e),
+            }
+        }
+        (Get, ["api", "sites"]) => match sites.list() {
+            Ok(list) => json(200, &Sites { simulated: sites.simulated(), list }),
+            Err(e) => error(500, &e),
+        },
+        (Post, ["api", "sites", name, verb]) => {
+            let Some(action) = SiteAction::from_verb(verb) else { return error(400, "action inconnue") };
+            if !nas_proto::valid_site_name(name) {
+                return error(400, "nom de site invalide");
+            }
+            match sites.action(name, action) {
+                Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),
+                Err(message) => json(200, &ActionResult { ok: false, message }),
             }
         }
         _ => error(404, "route inconnue"),

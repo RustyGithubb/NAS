@@ -10,6 +10,7 @@ use crate::{sidebar, tabs, theme, titlebar};
 pub enum Tab {
     Dashboard,
     Services,
+    Sites,
     Logs,
     Files,
     Settings,
@@ -17,12 +18,13 @@ pub enum Tab {
 
 impl Tab {
     /// Onglets de la barre principale (Réglages a sa pilule en bas à gauche).
-    pub const ALL: [Tab; 4] = [Tab::Dashboard, Tab::Services, Tab::Logs, Tab::Files];
+    pub const ALL: [Tab; 5] = [Tab::Dashboard, Tab::Services, Tab::Sites, Tab::Logs, Tab::Files];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Dashboard => t!("Tableau de bord", "Dashboard"),
             Tab::Services => "Services",
+            Tab::Sites => "Sites",
             Tab::Logs => t!("Journaux", "Logs"),
             Tab::Files => t!("Fichiers", "Files"),
             Tab::Settings => t!("Réglages", "Settings"),
@@ -34,6 +36,7 @@ impl Tab {
         match self {
             Tab::Dashboard => "dashboard",
             Tab::Services => "services",
+            Tab::Sites => "sites",
             Tab::Logs => "logs",
             Tab::Files => "files",
             Tab::Settings => "settings",
@@ -44,6 +47,9 @@ impl Tab {
 pub struct NasApp {
     current: Tab,
     prefs: Prefs,
+    /// Réglages modifiés, pas encore enregistrés : enregistrés quand l'édition est finie (pas à
+    /// chaque image pendant le glisser d'un curseur), comme dans WorkTable.
+    prefs_dirty: Option<std::time::Instant>,
     server: Server,
     /// Clé d'accès de l'agent (coffre de mots de passe du système, pas `prefs.json`).
     key: String,
@@ -58,15 +64,24 @@ impl NasApp {
         let prefs = Prefs::load();
         crate::i18n::set(prefs.language);
         theme::set_theme(ctx, prefs.theme);
+        theme::set_fonts(ctx, &prefs.fonts);
         let key = crate::secret::load();
         let server = Server::start(ctx, &prefs.agent_addr, &key);
-        NasApp { current: Tab::Dashboard, prefs, server, key, key_error: None, services: Default::default(), logs: Default::default() }
+        NasApp { current: Tab::Dashboard, prefs, prefs_dirty: None, server, key, key_error: None, services: Default::default(), logs: Default::default() }
     }
 }
 
 impl eframe::App for NasApp {
+    /// Fermeture : dernier enregistrement des réglages.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.prefs_dirty.take().is_some() {
+            self.prefs.save();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let window = ui.max_rect();
+        crate::liquid::set_settings(ui.ctx(), self.prefs.animation);
         let before = self.prefs.clone();
         let key_before = self.key.clone();
         let link = self.server.link();
@@ -77,6 +92,7 @@ impl eframe::App for NasApp {
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| match self.current {
             Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr),
             Tab::Services => open_logs = tabs::services::show(ui, &mut self.services, &self.server, &link, &self.prefs.agent_addr),
+            Tab::Sites => open_logs = tabs::sites::show(ui, &self.server, &link, &self.prefs.agent_addr),
             Tab::Logs => tabs::logs::show(ui, &mut self.logs, &self.server, &link, &self.prefs.agent_addr),
             Tab::Files => tabs::files(ui),
             Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link),
@@ -98,9 +114,20 @@ impl eframe::App for NasApp {
             if self.prefs.theme != before.theme {
                 theme::set_theme(ui.ctx(), self.prefs.theme);
             }
+            if self.prefs.fonts != before.fonts {
+                theme::set_fonts(ui.ctx(), &self.prefs.fonts);
+            }
             crate::i18n::set(self.prefs.language);
             self.server.set_target(&self.prefs.agent_addr, &self.key);
-            self.prefs.save();
+            self.prefs_dirty = Some(std::time::Instant::now());
+        }
+        if let Some(t) = self.prefs_dirty {
+            if t.elapsed() >= std::time::Duration::from_millis(500) {
+                self.prefs_dirty = None;
+                self.prefs.save();
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+            }
         }
         if self.key != key_before {
             self.server.set_target(&self.prefs.agent_addr, &self.key);

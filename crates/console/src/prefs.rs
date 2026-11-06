@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::Language;
-use crate::theme::ThemeId;
+use crate::theme::{FontPrefs, ThemeId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -17,11 +17,21 @@ pub struct Prefs {
     pub language: Language,
     /// Adresse de l'agent (« IP:port »).
     pub agent_addr: String,
+    /// Animation liquide (sélection d'onglets, filtres…).
+    pub animation: Animation,
+    /// Police et taille de chaque groupe de textes.
+    pub fonts: FontPrefs,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { theme: ThemeId::default(), language: Language::default(), agent_addr: format!("127.0.0.1:{}", nas_proto::DEFAULT_PORT) }
+        Prefs {
+            theme: ThemeId::default(),
+            language: Language::default(),
+            agent_addr: format!("127.0.0.1:{}", nas_proto::DEFAULT_PORT),
+            animation: Animation::default(),
+            fonts: FontPrefs::default(),
+        }
     }
 }
 
@@ -30,6 +40,71 @@ fn path() -> Option<PathBuf> {
         return Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/prefs.json"));
     }
     directories::ProjectDirs::from("", "", "NAS").map(|d| d.config_dir().join("prefs.json"))
+}
+
+// --- Animation (reprise de WorkTable) ----------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize, Default)]
+pub enum Curve {
+    Linear,
+    EaseIn,
+    EaseOut,
+    #[default]
+    EaseInOut,
+    /// Léger dépassement puis retour (effet « goutte »).
+    Elastic,
+}
+
+impl Curve {
+    pub const ALL: [Curve; 5] = [Curve::Linear, Curve::EaseIn, Curve::EaseOut, Curve::EaseInOut, Curve::Elastic];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Curve::Linear => t!("Linéaire", "Linear"),
+            Curve::EaseIn => "Ease in",
+            Curve::EaseOut => "Ease out",
+            Curve::EaseInOut => "Ease in-out",
+            Curve::Elastic => t!("Élastique", "Elastic"),
+        }
+    }
+
+    /// Progression `t` ∈ [0, 1] → valeur animée.
+    pub fn apply(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Curve::Linear => t,
+            Curve::EaseIn => t * t * t,
+            Curve::EaseOut => 1.0 - (1.0 - t).powi(3),
+            Curve::EaseInOut => {
+                if t < 0.5 {
+                    4.0 * t * t * t
+                } else {
+                    1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+                }
+            }
+            Curve::Elastic => {
+                // « back out » : dépasse légèrement la cible puis revient.
+                let c1 = 1.70158;
+                let c3 = c1 + 1.0;
+                1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Animation {
+    /// Durée d'un déplacement, en millisecondes.
+    pub duration_ms: f32,
+    /// Opacité du surlignage liquide (0 à 1).
+    pub opacity: f32,
+    pub curve: Curve,
+}
+
+impl Default for Animation {
+    fn default() -> Self {
+        Animation { duration_ms: 450.0, opacity: 1.0, curve: Curve::EaseInOut }
+    }
 }
 
 impl Prefs {

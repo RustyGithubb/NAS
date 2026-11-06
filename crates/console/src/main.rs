@@ -13,6 +13,7 @@ mod sidebar;
 mod tabs;
 mod theme;
 mod titlebar;
+mod widgets;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {

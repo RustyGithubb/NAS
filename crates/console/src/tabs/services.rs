@@ -139,7 +139,7 @@ fn row(ui: &mut egui::Ui, s: &Service, busy: bool) -> Option<RowAction> {
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             ui.label(egui::RichText::new(&s.name).color(theme::TEXT()));
-            ui.label(egui::RichText::new(&s.description).small().color(theme::TEXT_MUTED()));
+            ui.label(egui::RichText::new(&s.description).font(theme::editor_font(12.0, false)).color(theme::TEXT_MUTED()));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button(t!("Journal", "Log")).clicked() {

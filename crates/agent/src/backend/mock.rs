@@ -10,12 +10,15 @@ use std::time::Duration;
 use nas_proto::{Action, LogEntry, Logs, Service, ServiceState};
 
 /// Services d'un serveur maison type, et lignes qu'ils écrivent en fonctionnement.
-const CATALOG: [(&str, &str, bool, &[&str]); 6] = [
+const CATALOG: [(&str, &str, bool, &[&str]); 9] = [
     ("nas-agent.service", "NAS — agent de la console", true, &["GET /api/status 200", "GET /api/services 200"]),
     ("ssh.service", "OpenBSD Secure Shell server", true, &["Accepted publickey for dorian from 10.8.0.2 port 51234 ssh2", "Connection closed by 10.8.0.2 port 51234"]),
     ("smbd.service", "Samba SMB Daemon", true, &["connect to service partage initially as user dorian", "closed connection to service partage"]),
     ("wg-quick@wg0.service", "WireGuard via wg-quick(8) for wg0", true, &["wg0: peer handshake completed"]),
     ("restic-backup.service", "Sauvegarde restic", false, &["snapshot 4f2a9c1e saved", "Files: 12 new, 3 changed, 18342 unmodified"]),
+    ("caddy.service", "Caddy (serveur web)", true, &["exemple.fr: GET / 200", "liens.exemple.fr: GET /favicon.ico 404", "certificate obtained successfully: liens.exemple.fr"]),
+    ("php8.4-fpm.service", "The PHP 8.4 FastCGI Process Manager", true, &["pool www: server reached pm.max_children setting (5)"]),
+    ("mariadb.service", "MariaDB 11.8 database server", true, &["Aborted connection 42 to db: 'wordpress' (Got timeout reading communication packets)"]),
     ("worktable-sync.service", "Synchronisation WorkTable", true, &["sync: 3 notes envoyées", "sync: aucun changement"]),
 ];
 

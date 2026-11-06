@@ -1,6 +1,8 @@
 //! Barre de navigation verticale en forme de pilule, flottante à gauche (reprise de WorkTable) :
 //! logo, onglets principaux, et pilule Réglages ancrée en bas.
 
+use std::sync::Mutex;
+
 use eframe::egui::{self, Color32, CornerRadius, Margin, Order, Painter, Pos2, Rect, Sense, Shadow, Stroke, vec2};
 
 use crate::app::Tab;
@@ -33,9 +35,9 @@ pub fn show(ctx: &egui::Context, window: Rect, current: Tab) -> Option<Tab> {
             ui.set_width(BUTTON);
             ui.spacing_mut().item_spacing.y = 8.0;
 
-            // Logo
-            let (logo, _) = ui.allocate_exact_size(vec2(BUTTON, BUTTON), Sense::hover());
-            paint_logo(ui.painter(), Rect::from_center_size(logo.center(), vec2(30.0, 30.0)), theme::TEXT());
+            // Logo : chaque clic le fait tourner (et trembler les panneaux).
+            let (logo, logo_resp) = ui.allocate_exact_size(vec2(BUTTON, BUTTON), Sense::click());
+            spinning_logo(ui, logo, logo_resp.clicked());
 
             // Séparateur
             let (sep, _) = ui.allocate_exact_size(vec2(BUTTON, 1.0), Sense::hover());
@@ -72,6 +74,99 @@ pub fn bottom_buttons(ctx: &egui::Context, window: Rect, current: Tab) -> Option
         });
     });
     clicked
+}
+
+// --- Roue du logo (reprise de WorkTable) ---------------------------------------------------
+
+/// Rotation du logo : chaque clic l'accélère et le fait grossir (effet élastique), puis il
+/// freine doucement et revient à sa position et à sa taille d'origine.
+#[derive(Default)]
+struct Spin {
+    angle: f32,
+    vel: f32,
+    scale: f32,
+    scale_vel: f32,
+}
+
+static SPIN: Mutex<Option<Spin>> = Mutex::new(None);
+
+/// Intensité de la rotation du logo (0 = immobile ; ~1 après quelques clics, plus au-delà) :
+/// les panneaux tremblent d'autant plus fort que la roue tourne vite.
+pub fn spin_intensity() -> f32 {
+    SPIN.lock().ok().and_then(|g| g.as_ref().map(|s| s.vel.abs() / 30.0)).unwrap_or(0.0)
+}
+
+fn spinning_logo(ui: &mut egui::Ui, cell: Rect, clicked: bool) {
+    use std::f32::consts::TAU;
+    let dt = ui.input(|i| i.stable_dt).clamp(0.0, 1.0 / 30.0);
+    let mut guard = SPIN.lock().unwrap_or_else(|e| e.into_inner());
+    let s = guard.get_or_insert_with(|| Spin { scale: 1.0, ..Default::default() });
+    if clicked {
+        // Plus on clique, plus il tourne vite (impulsion croissante) et plus il grossit.
+        s.vel += 8.0 + s.vel * 0.4;
+        s.scale_vel += 3.0;
+    }
+    // Freinage doux, puis retour à l'endroit (tour complet le plus proche) quand il ralentit.
+    s.vel *= (-dt).exp();
+    let target = (s.angle / TAU).round() * TAU;
+    if s.vel.abs() < 3.0 {
+        s.vel += (25.0 * (target - s.angle) - 7.0 * s.vel) * dt;
+    }
+    s.angle += s.vel * dt;
+    // Taille : suit la vitesse, avec un ressort qui rebondit (élastique).
+    let goal = 1.0 + (s.vel.abs() / 25.0).min(0.7);
+    s.scale_vel += (160.0 * (goal - s.scale) - 10.0 * s.scale_vel) * dt;
+    s.scale += s.scale_vel * dt;
+    let resting = s.vel.abs() < 0.02 && (s.angle - target).abs() < 0.002 && (s.scale - 1.0).abs() < 0.001 && s.scale_vel.abs() < 0.01;
+    if resting {
+        *s = Spin { scale: 1.0, ..Default::default() };
+        paint_logo(ui.painter(), Rect::from_center_size(cell.center(), vec2(28.0, 28.0)), theme::TEXT());
+        return;
+    }
+    ui.ctx().request_repaint();
+    // Au-dessus du reste de la barre pendant qu'il est agrandi. WorkTable fait tourner une image ;
+    // ici le logo vectoriel est tourné point par point (même rendu, sans fichier image).
+    let p = ui.ctx().layer_painter(egui::LayerId::new(Order::Tooltip, egui::Id::unique("nas_logo_spin")));
+    paint_logo_rotated(&p, cell.center(), 28.0 * s.scale, s.angle, theme::TEXT());
+}
+
+/// Rectangle arrondi en points (unités du logo, 0 à 100), pour pouvoir le tourner.
+fn rounded_rect(x0: f32, y0: f32, x1: f32, y1: f32, r: f32) -> Vec<(f32, f32)> {
+    use std::f32::consts::FRAC_PI_2;
+    let corners = [(x1 - r, y0 + r, -FRAC_PI_2), (x1 - r, y1 - r, 0.0), (x0 + r, y1 - r, FRAC_PI_2), (x0 + r, y0 + r, 2.0 * FRAC_PI_2)];
+    let mut pts = Vec::new();
+    for (cx, cy, start) in corners {
+        for i in 0..=6 {
+            let a = start + FRAC_PI_2 * i as f32 / 6.0;
+            pts.push((cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    pts
+}
+
+/// Même tracé que `paint_logo`, tourné de `angle` autour de `center`.
+fn paint_logo_rotated(p: &Painter, center: Pos2, size: f32, angle: f32, color: Color32) {
+    let k = size / 100.0;
+    let rot = egui::emath::Rot2::from_angle(angle);
+    let at = |x: f32, y: f32| center + rot * vec2((x - 50.0) * k, (y - 50.0) * k);
+    let w = 5.0 * k;
+    let stroke = Stroke::new(w, color);
+    for (x0, y0, dx, dy) in [(8.0, 8.0, 1.0, 1.0), (92.0, 8.0, -1.0, 1.0), (8.0, 92.0, 1.0, -1.0), (92.0, 92.0, -1.0, -1.0)] {
+        let pts = [at(x0, y0 + 14.0 * dy), at(x0, y0), at(x0 + 14.0 * dx, y0)];
+        p.line_segment([pts[0], pts[1]], stroke);
+        p.line_segment([pts[1], pts[2]], stroke);
+        for q in pts {
+            p.circle_filled(q, w / 2.0, color);
+        }
+    }
+    p.add(egui::Shape::closed_line(rounded_rect(18.0, 18.0, 82.0, 82.0, 10.0).into_iter().map(|(x, y)| at(x, y)).collect(), stroke));
+    let h = (40.0 - 2.0 * 5.0) / 3.0;
+    for i in 0..3 {
+        let y = 30.0 + i as f32 * (h + 5.0);
+        let bay = rounded_rect(30.0, y, 58.0, y + h, 2.5).into_iter().map(|(x, y)| at(x, y)).collect();
+        p.add(egui::Shape::convex_polygon(bay, color, Stroke::NONE));
+        p.circle_filled(at(66.0, y + h / 2.0), h * k * 0.42, color);
+    }
 }
 
 /// Logo de l'app, dessiné en vectoriel : équerres aux coins et cadre arrondi (comme WorkTable),
@@ -193,6 +288,7 @@ fn draw_gear(p: &Painter, r: Rect, c: Color32, phase: f32) {
 
 /// Icônes vectorielles ; `phase` (0 → 1) anime l'icône juste après un clic :
 /// tableau de bord = les tuiles s'écartent, services = les voyants s'allument tour à tour,
+/// sites = le globe tourne,
 /// journaux = le curseur clignote, fichiers = le rabat s'entrouvre, réglages = l'engrenage tourne.
 pub fn draw_icon(p: &Painter, r: Rect, tab: Tab, c: Color32, phase: f32) {
     let w = (r.width() / 18.0).max(0.5);
@@ -224,6 +320,26 @@ pub fn draw_icon(p: &Painter, r: Rect, tab: Tab, c: Color32, phase: f32) {
                     [Pos2::new(row.left() + 6.5 * w, row.center().y), Pos2::new(row.right() - 3.0 * w, row.center().y)],
                     Stroke::new(1.2 * w.sqrt(), c.gamma_multiply(0.7)),
                 );
+            }
+        }
+        Tab::Sites => {
+            // Globe : contour, équateur, méridien et parallèles ; au clic, le méridien fait un tour.
+            let o = r.center();
+            let rad = r.width() / 2.0 - 0.5 * w;
+            p.circle_stroke(o, rad, s);
+            let turn = (ease(phase) * std::f32::consts::TAU).cos();
+            let mer: Vec<Pos2> = (0..=24)
+                .map(|i| {
+                    let a = std::f32::consts::PI * (i as f32 / 24.0 - 0.5);
+                    o + vec2(rad * 0.45 * a.cos() * turn, rad * a.sin())
+                })
+                .collect();
+            p.add(egui::Shape::line(mer, s));
+            p.line_segment([o - vec2(rad, 0.0), o + vec2(rad, 0.0)], s);
+            let thin = Stroke::new(1.2 * w.sqrt(), c.gamma_multiply(0.7));
+            for dy in [-0.5f32, 0.5] {
+                let half = rad * (1.0 - dy * dy).sqrt();
+                p.line_segment([o + vec2(-half, dy * rad), o + vec2(half, dy * rad)], thin);
             }
         }
         Tab::Logs => {

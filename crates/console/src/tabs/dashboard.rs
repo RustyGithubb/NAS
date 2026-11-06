@@ -68,6 +68,11 @@ fn online(ui: &mut egui::Ui, s: &Status) {
 
 /// Tuile : intitulé discret, grande valeur, note, et jauge facultative (0 à 100).
 fn tile(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>) {
+    let jolt = crate::widgets::shake_offset(ui.ctx(), ui.max_rect().left() * 0.011);
+    crate::widgets::shifted(ui, jolt, |ui| tile_inner(ui, key, label, value, note, gauge));
+}
+
+fn tile_inner(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>) {
     egui::Frame::new().fill(theme::SURFACE()).stroke(Stroke::new(1.0, theme::BORDER())).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 2.0;

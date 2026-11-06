@@ -4,8 +4,9 @@ pub mod dashboard;
 pub mod logs;
 pub mod services;
 pub mod settings;
+pub mod sites;
 
-use eframe::egui::{self, CornerRadius, Margin, Stroke};
+use eframe::egui::{self, Stroke};
 
 use crate::theme;
 
@@ -13,24 +14,13 @@ use crate::theme;
 pub fn header(ui: &mut egui::Ui, title: &str, subtitle: &str) {
     ui.label(egui::RichText::new(title).font(theme::title_font(28.0)).color(theme::TEXT()));
     ui.add_space(-4.0);
-    ui.label(egui::RichText::new(subtitle).color(theme::TEXT_MUTED()));
+    ui.label(egui::RichText::new(subtitle).font(theme::editor_font(14.0, false)).color(theme::TEXT_MUTED()));
     ui.add_space(16.0);
 }
 
-/// Carte : surface légèrement plus claire que le fond, bord fin, coins arrondis.
+/// Carte (celle de WorkTable : elle tremble quand la roue du logo tourne).
 pub fn card<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::new()
-        .fill(theme::SURFACE())
-        .stroke(Stroke::new(1.0, theme::BORDER()))
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::same(18))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(egui::RichText::new(title).font(theme::title_font(15.0)).color(theme::TEXT()));
-            ui.add_space(6.0);
-            body(ui)
-        })
-        .inner
+    crate::widgets::card(ui, title, 0.0, body)
 }
 
 /// Carte « agent injoignable », commune aux onglets qui ont besoin de l'agent.

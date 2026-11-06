@@ -148,7 +148,7 @@ pub fn TEXT() -> Color32 {
 pub fn TEXT_MUTED() -> Color32 {
     color(5)
 }
-#[allow(non_snake_case, dead_code)]
+#[allow(non_snake_case)]
 pub fn TEXT_FAINT() -> Color32 {
     color(6)
 }
@@ -202,33 +202,143 @@ pub fn set_theme(ctx: &egui::Context, id: ThemeId) {
 /// = marge écran (16) + largeur pilule (56) + respiration (32).
 pub const CONTENT_LEFT_INSET: i8 = 104;
 
-/// Famille du groupe « Titres » (titres d'onglets et de cartes, toujours en gras).
-pub const TITLE_FONT: &str = "nas-title";
+/// Familles de police du groupe « Texte » (descriptions, messages), avec une vraie graisse grasse.
+pub const EDITOR_FONT: &str = "inter";
+pub const EDITOR_FONT_BOLD: &str = "inter_bold";
+/// Famille du groupe « Titres » (titres d'onglets et de sections, toujours en gras).
+pub const TITLE_FONT: &str = "wt-title";
 
-/// Police des titres.
+/// Police du groupe « Texte ».
+pub fn editor_font(size: f32, bold: bool) -> FontId {
+    FontId::new(size, FontFamily::Name(if bold { EDITOR_FONT_BOLD } else { EDITOR_FONT }.into()))
+}
+
+/// Police du groupe « Titres ».
 pub fn title_font(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(TITLE_FONT.into()))
 }
 
-/// Polices : interface en Ubuntu (intégrée à egui), titres en Inter gras, code en Hack.
-fn set_fonts(ctx: &egui::Context) {
+/// Polices proposées dans les réglages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FontChoice {
+    Inter,
+    Ubuntu,
+    PlexSans,
+    Lato,
+    PlexSerif,
+    Hack,
+    PlexMono,
+}
+
+impl FontChoice {
+    pub const ALL: [FontChoice; 7] = [FontChoice::Inter, FontChoice::Ubuntu, FontChoice::PlexSans, FontChoice::Lato, FontChoice::PlexSerif, FontChoice::Hack, FontChoice::PlexMono];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FontChoice::Inter => "Inter",
+            FontChoice::Ubuntu => "Ubuntu",
+            FontChoice::PlexSans => "IBM Plex Sans",
+            FontChoice::Lato => "Lato",
+            FontChoice::PlexSerif => "IBM Plex Serif",
+            FontChoice::Hack => t!("Hack (chasse fixe)", "Hack (monospace)"),
+            FontChoice::PlexMono => t!("IBM Plex Mono (chasse fixe)", "IBM Plex Mono (monospace)"),
+        }
+    }
+
+    /// Fichiers (régulier, gras). `None` : police intégrée à egui (une seule graisse).
+    fn data(self) -> Option<(&'static [u8], &'static [u8])> {
+        Some(match self {
+            FontChoice::Inter => (include_bytes!("../assets/fonts/Inter-Regular.otf"), include_bytes!("../assets/fonts/Inter-Bold.otf")),
+            FontChoice::PlexSans => (include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf"), include_bytes!("../assets/fonts/IBMPlexSans-Bold.ttf")),
+            FontChoice::Lato => (include_bytes!("../assets/fonts/Lato-Regular.ttf"), include_bytes!("../assets/fonts/Lato-Bold.ttf")),
+            FontChoice::PlexSerif => (include_bytes!("../assets/fonts/IBMPlexSerif-Regular.ttf"), include_bytes!("../assets/fonts/IBMPlexSerif-Bold.ttf")),
+            FontChoice::PlexMono => (include_bytes!("../assets/fonts/IBMPlexMono-Regular.ttf"), include_bytes!("../assets/fonts/IBMPlexMono-Bold.ttf")),
+            FontChoice::Ubuntu | FontChoice::Hack => return None,
+        })
+    }
+
+    /// Nom de la police intégrée d'egui.
+    fn builtin(self) -> &'static str {
+        if self == FontChoice::Hack { "Hack" } else { "Ubuntu-Light" }
+    }
+}
+
+/// Police et taille d'un groupe de textes.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FontGroup {
+    pub font: FontChoice,
+    /// Taille relative (1.0 = 100 %).
+    pub scale: f32,
+}
+
+/// Polices par groupe (réglables dans les Réglages).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct FontPrefs {
+    /// Titres d'onglets et de sections.
+    pub titles: FontGroup,
+    /// Interface : menus, listes, boutons, étiquettes.
+    pub interface: FontGroup,
+    /// Texte : descriptions, messages.
+    pub content: FontGroup,
+    /// Code et chasse fixe.
+    pub code: FontGroup,
+}
+
+impl Default for FontPrefs {
+    fn default() -> Self {
+        FontPrefs {
+            titles: FontGroup { font: FontChoice::Inter, scale: 1.0 },
+            interface: FontGroup { font: FontChoice::Ubuntu, scale: 1.0 },
+            content: FontGroup { font: FontChoice::Inter, scale: 1.0 },
+            code: FontGroup { font: FontChoice::Hack, scale: 1.0 },
+        }
+    }
+}
+
+/// Installe la police de chaque groupe (au démarrage et quand les réglages changent).
+pub fn set_fonts(ctx: &egui::Context, prefs: &FontPrefs) {
     use std::sync::Arc;
+    let defaults = egui::FontDefinitions::default();
     let mut fonts = egui::FontDefinitions::default();
-    fonts.font_data.insert("inter-bold".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Bold.otf"))));
-    fonts.font_data.insert("inter".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Inter-Regular.otf"))));
-    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    // Inter en repli juste après la police principale : symboles absents d'Ubuntu.
-    let mut ui_chain = proportional.clone();
-    ui_chain.insert(1.min(ui_chain.len()), "inter".into());
-    fonts.families.insert(FontFamily::Proportional, ui_chain);
-    let mut title = vec!["inter-bold".to_string()];
-    title.extend(proportional);
-    fonts.families.insert(FontFamily::Name(TITLE_FONT.into()), title);
+    let mut add = |key: &str, choice: FontChoice, bold: bool, scale: f32| -> String {
+        let mut fd = match choice.data() {
+            Some((r, b)) => egui::FontData::from_static(if bold { b } else { r }),
+            None => (*defaults.font_data[choice.builtin()]).clone(),
+        };
+        fd.tweak.scale = scale.clamp(0.6, 1.6);
+        fonts.font_data.insert(key.to_string(), Arc::new(fd));
+        key.to_string()
+    };
+    let title = add("wt-title-data", prefs.titles.font, true, prefs.titles.scale);
+    let ui_font = add("wt-ui-data", prefs.interface.font, false, prefs.interface.scale);
+    let content = add("wt-content-data", prefs.content.font, false, prefs.content.scale);
+    let content_b = add("wt-content-bold-data", prefs.content.font, true, prefs.content.scale);
+    let code = add("wt-code-data", prefs.code.font, false, prefs.code.scale);
+
+    // Symboles absents de certaines polices (★ ☆ des favoris…) : Inter en premier repli.
+    let symbols = add("wt-symbols-data", FontChoice::Inter, false, 1.0);
+
+    // Replis (symboles, émojis) après la police principale de chaque famille.
+    let fallback: Vec<String> =
+        std::iter::once(symbols).chain(defaults.families.get(&FontFamily::Proportional).cloned().unwrap_or_default().into_iter().filter(|f| f != "Ubuntu-Light")).collect();
+    let chain = |main: &str| -> Vec<String> {
+        let mut v = vec![main.to_string()];
+        v.extend(fallback.iter().cloned());
+        v
+    };
+    fonts.families.insert(FontFamily::Proportional, chain(&ui_font));
+    let mut mono = vec![code];
+    mono.extend(defaults.families.get(&FontFamily::Monospace).cloned().unwrap_or_default().into_iter().filter(|f| f != "Hack"));
+    fonts.families.insert(FontFamily::Monospace, mono);
+    fonts.families.insert(FontFamily::Name(EDITOR_FONT.into()), chain(&content));
+    fonts.families.insert(FontFamily::Name(EDITOR_FONT_BOLD.into()), chain(&content_b));
+    fonts.families.insert(FontFamily::Name(TITLE_FONT.into()), chain(&title));
     ctx.set_fonts(fonts);
 }
 
 pub fn apply(ctx: &egui::Context) {
-    set_fonts(ctx);
+    set_fonts(ctx, &FontPrefs::default());
     ctx.set_visuals(egui::Visuals::dark());
     ctx.all_styles_mut(|style| {
         style.text_styles = [

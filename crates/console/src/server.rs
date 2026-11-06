@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use nas_proto::{Action, ActionResult, LogEntry, Logs, Services, Status};
+use nas_proto::{Action, ActionResult, LogEntry, Logs, Services, SiteAction, Sites, Status};
 
 /// Intervalle entre deux demandes d'état.
 const PERIOD: Duration = Duration::from_secs(2);
@@ -48,6 +48,11 @@ pub struct Shared {
     key: String,
     link: Option<Link>,
     pub services: Option<Services>,
+    pub sites: Option<Sites>,
+    /// Sites dont une action est en cours.
+    pub sites_pending: HashSet<String>,
+    /// Résultat de la dernière action sur un site.
+    pub last_site_action: Option<(String, SiteAction, ActionResult)>,
     /// Services dont une action est en cours.
     pub pending: HashSet<String>,
     /// Résultat de la dernière action : service, action, résultat.
@@ -72,13 +77,16 @@ impl Server {
                 let to = Target::of(&lock(&s));
                 let started = Instant::now();
                 let link = fetch_status(&a, &to);
-                let services = matches!(link, Link::Online(_)).then(|| get::<Services>(&a, &to, "/api/services").ok()).flatten();
+                let online = matches!(link, Link::Online(_));
+                let services = online.then(|| get::<Services>(&a, &to, "/api/services").ok()).flatten();
+                let sites = online.then(|| get::<Sites>(&a, &to, "/api/sites").ok()).flatten();
                 {
                     let mut s = lock(&s);
                     // Adresse ou clé changée pendant la demande : résultat ignoré.
                     if to.current(&s) {
                         s.link = Some(link);
                         s.services = services;
+                        s.sites = sites;
                     }
                 }
                 c.request_repaint();
@@ -130,6 +138,36 @@ impl Server {
                     s.services = services;
                 }
                 s.last_action = Some((unit, action, result));
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Met un site en ligne / en maintenance / hors ligne, ou le sauvegarde ; le résultat arrive
+    /// dans `last_site_action`.
+    pub fn site_action(&self, name: &str, action: SiteAction) {
+        let to = {
+            let mut s = self.data();
+            if !s.sites_pending.insert(name.to_string()) {
+                return;
+            }
+            Target::of(&s)
+        };
+        let (shared, agent, ctx, name) = (self.shared.clone(), self.agent.clone(), self.ctx.clone(), name.to_string());
+        std::thread::spawn(move || {
+            let path = format!("/api/sites/{}/{}", urlencoding::encode(&name), action.verb());
+            let result = match to.request(&agent, "POST", &path).call() {
+                Ok(r) => r.into_json::<ActionResult>().unwrap_or_else(|e| ActionResult { ok: false, message: e.to_string() }),
+                Err(e) => ActionResult { ok: false, message: describe(e) },
+            };
+            let sites = get::<Sites>(&agent, &to, "/api/sites").ok();
+            let mut s = lock(&shared);
+            s.sites_pending.remove(&name);
+            if to.current(&s) {
+                if sites.is_some() {
+                    s.sites = sites;
+                }
+                s.last_site_action = Some((name, action, result));
             }
             ctx.request_repaint();
         });

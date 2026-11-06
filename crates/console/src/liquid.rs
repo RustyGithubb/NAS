@@ -2,7 +2,7 @@
 //!
 //! Le bord avant part en premier, le bord arrière suit avec un léger retard : la forme
 //! s'étire pendant le trajet puis se resserre sur la cible, en s'amincissant au milieu
-//! du mouvement. Repris de WorkTable (vitesse et courbe fixes ici).
+//! du mouvement. Vitesse, opacité et courbe viennent des réglages. Repris de WorkTable.
 //!
 //! Utilisation :
 //! ```ignore
@@ -15,28 +15,19 @@ use std::f32::consts::PI;
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Shape, layers::ShapeIdx, vec2};
 
-/// Réglages de l'animation (fixes pour l'instant).
-#[derive(Clone, Copy)]
-struct Animation {
-    duration_ms: f32,
-    opacity: f32,
-    curve: Curve,
+use crate::prefs::{Animation, Curve};
+
+fn settings_id() -> egui::Id {
+    egui::Id::unique("wt_anim_settings")
 }
 
-const ANIM: Animation = Animation { duration_ms: 380.0, opacity: 1.0, curve: Curve::EaseInOut };
-
-/// Courbe d'accélération.
-#[derive(Clone, Copy)]
-pub enum Curve {
-    EaseInOut,
+/// À appeler une fois par frame avec les réglages courants.
+pub fn set_settings(ctx: &egui::Context, a: Animation) {
+    ctx.data_mut(|d| d.insert_temp(settings_id(), a));
 }
 
-impl Curve {
-    pub fn apply(self, t: f32) -> f32 {
-        match self {
-            Curve::EaseInOut => egui::emath::easing::cubic_in_out(t.clamp(0.0, 1.0)),
-        }
-    }
+pub fn settings(ctx: &egui::Context) -> Animation {
+    ctx.data(|d| d.get_temp(settings_id())).unwrap_or_default()
 }
 
 #[derive(Clone, Default)]
@@ -63,7 +54,7 @@ impl Liquid {
         let origin = ui.min_rect().min;
         let slot = ui.painter().add(Shape::Noop);
         let state: State = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
-        let anim = ANIM;
+        let anim = settings(ui.ctx());
         let now = ui.input(|i| i.time);
         let current = frame_rect(&state, now, &anim).map(|(r, a)| (r.translate(origin.to_vec2()), a));
         Liquid { id, slot, origin, current, target: None }
@@ -86,7 +77,7 @@ impl Liquid {
 
     pub fn end(self, ui: &egui::Ui, fill: Color32, radius: f32) {
         let ctx = ui.ctx();
-        let anim = ANIM;
+        let anim = settings(ctx);
         let now = ui.input(|i| i.time);
         let mut state: State = ctx.data(|d| d.get_temp(self.id)).unwrap_or_default();
         let new_to = self.target.map(|(r, _)| r.translate(-self.origin.to_vec2()));

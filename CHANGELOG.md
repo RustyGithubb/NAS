@@ -9,3 +9,5 @@
 - Services : liste avec recherche et filtres, démarrer / arrêter / redémarrer (simulés hors du serveur).
 - Journaux : lignes d'un service en direct, filtre, couleurs selon la gravité.
 - Clé d'accès : l'agent refuse toute demande sans sa clé ; la console la garde dans le coffre de mots de passe de Windows (Réglages › Serveur).
+- Repris de WorkTable : réglages des animations (vitesse, opacité, courbe, aperçu), police et taille par groupe de textes (titres, interface, texte, code), roue du logo qui fait trembler les cartes ; Réglages organisés comme WorkTable.
+- Sites : sites web hébergés (WordPress, pages fixes) — en ligne / maintenance / coupé, certificat HTTPS, dossier des médias, sauvegarde immédiate (simulés hors du serveur).

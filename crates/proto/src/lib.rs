@@ -5,11 +5,13 @@
 //! - `GET  /api/services` → [`Services`]
 //! - `POST /api/services/<unité>/<start|stop|restart>` → [`ActionResult`]
 //! - `GET  /api/logs/<unité>?after=<curseur>` → [`Logs`] (curseur encodé pour l'URL)
+//! - `GET  /api/sites` → [`Sites`]
+//! - `POST /api/sites/<nom>/<online|maintenance|offline|backup>` → [`ActionResult`]
 
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;
@@ -139,6 +141,82 @@ pub struct LogEntry {
     pub message: String,
 }
 
+/// Sites web hébergés.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Sites {
+    /// Données simulées (agent lancé hors du serveur).
+    pub simulated: bool,
+    pub list: Vec<Site>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Site {
+    /// Nom court, sert d'identifiant (« portfolio »).
+    pub name: String,
+    /// Adresse publique (« dorian-noirel.fr »).
+    pub domain: String,
+    pub kind: SiteKind,
+    pub state: SiteState,
+    /// Dossier du site sur le serveur.
+    pub root: String,
+    /// Dossier des fichiers du site (images, vidéos…), visible aussi dans l'onglet Fichiers.
+    pub media_dir: String,
+    /// Fin de validité du certificat HTTPS (millisecondes depuis 1970), si connue.
+    pub cert_expires_ms: Option<i64>,
+    /// Dernière sauvegarde (millisecondes depuis 1970).
+    pub last_backup_ms: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SiteKind {
+    /// Pages HTML fixes (page de liens, vitrine…).
+    #[default]
+    Static,
+    /// WordPress (PHP + base de données).
+    WordPress,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SiteState {
+    /// Visible par tous.
+    Online,
+    /// Page « site en maintenance » à la place du site.
+    Maintenance,
+    /// Plus servi du tout.
+    #[default]
+    Offline,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SiteAction {
+    Set(SiteState),
+    /// Sauvegarde immédiate (fichiers + base de données).
+    Backup,
+}
+
+impl SiteAction {
+    pub const ALL: [SiteAction; 4] = [SiteAction::Set(SiteState::Online), SiteAction::Set(SiteState::Maintenance), SiteAction::Set(SiteState::Offline), SiteAction::Backup];
+
+    /// Mot utilisé dans l'URL.
+    pub fn verb(self) -> &'static str {
+        match self {
+            SiteAction::Set(SiteState::Online) => "online",
+            SiteAction::Set(SiteState::Maintenance) => "maintenance",
+            SiteAction::Set(SiteState::Offline) => "offline",
+            SiteAction::Backup => "backup",
+        }
+    }
+
+    pub fn from_verb(v: &str) -> Option<SiteAction> {
+        Self::ALL.into_iter().find(|a| a.verb() == v)
+    }
+}
+
+/// Nom de site acceptable : lettres minuscules, chiffres et tirets (il sert de nom de fichier).
+pub fn valid_site_name(name: &str) -> bool {
+    (1..=40).contains(&name.len()) && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 /// Nom d'unité acceptable : protège les commandes `systemctl` / `journalctl` (pas d'option
 /// déguisée en nom, pas de caractère inattendu).
 pub fn valid_unit(name: &str) -> bool {
@@ -157,6 +235,18 @@ mod tests {
         assert!(!valid_unit("ssh"));
         assert!(!valid_unit("a b.service"));
         assert!(!valid_unit("x;rm.service"));
+    }
+
+    #[test]
+    fn sites() {
+        assert!(valid_site_name("portfolio"));
+        assert!(valid_site_name("liens-2026"));
+        assert!(!valid_site_name("../etc"));
+        assert!(!valid_site_name("Portfolio"));
+        assert!(!valid_site_name(""));
+        for a in SiteAction::ALL {
+            assert_eq!(SiteAction::from_verb(a.verb()), Some(a));
+        }
     }
 
     #[test]
