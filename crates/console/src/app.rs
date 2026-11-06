@@ -3,6 +3,7 @@
 use eframe::egui::{self, Margin};
 
 use crate::prefs::Prefs;
+use crate::server::Server;
 use crate::{sidebar, tabs, theme, titlebar};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +44,7 @@ impl Tab {
 pub struct NasApp {
     current: Tab,
     prefs: Prefs,
+    server: Server,
 }
 
 impl NasApp {
@@ -50,7 +52,8 @@ impl NasApp {
         let prefs = Prefs::load();
         crate::i18n::set(prefs.language);
         theme::set_theme(ctx, prefs.theme);
-        NasApp { current: Tab::Dashboard, prefs }
+        let server = Server::start(ctx, &prefs.agent_addr);
+        NasApp { current: Tab::Dashboard, prefs, server }
     }
 }
 
@@ -58,15 +61,16 @@ impl eframe::App for NasApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let window = ui.max_rect();
         let before = self.prefs.clone();
+        let link = self.server.link();
 
         // L'onglet ouvert occupe toute la fenêtre ; la marge gauche réserve la place de la barre flottante.
         let margin = Margin { left: theme::CONTENT_LEFT_INSET, right: 32, top: 36, bottom: 32 };
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| match self.current {
-            Tab::Dashboard => tabs::dashboard(ui),
+            Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr),
             Tab::Services => tabs::services(ui),
             Tab::Logs => tabs::logs(ui),
             Tab::Files => tabs::files(ui),
-            Tab::Settings => tabs::settings::show(ui, &mut self.prefs),
+            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &link),
         });
 
         // Barre latérale et pilule du bas, au premier plan.
@@ -81,6 +85,7 @@ impl eframe::App for NasApp {
                 theme::set_theme(ui.ctx(), self.prefs.theme);
             }
             crate::i18n::set(self.prefs.language);
+            self.server.set_addr(&self.prefs.agent_addr);
             self.prefs.save();
         }
     }

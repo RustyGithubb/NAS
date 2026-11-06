@@ -1,5 +1,6 @@
-//! Onglets. Pour l'instant vides (étape 2) : ils seront remplis avec les données de l'agent.
+//! Onglets. Services, Journaux et Fichiers sont encore vides.
 
+pub mod dashboard;
 pub mod settings;
 
 use eframe::egui::{self, CornerRadius, Margin, Stroke};
@@ -35,11 +36,6 @@ fn coming(ui: &mut egui::Ui, what: &str) {
     card(ui, t!("Bientôt", "Coming soon"), |ui| {
         ui.label(egui::RichText::new(what).color(theme::TEXT_MUTED()));
     });
-}
-
-pub fn dashboard(ui: &mut egui::Ui) {
-    header(ui, t!("Tableau de bord", "Dashboard"), t!("État du serveur en un coup d'œil", "Server status at a glance"));
-    coming(ui, t!("Processeur, mémoire, disques, température et durée de fonctionnement.", "CPU, memory, disks, temperature and uptime."));
 }
 
 pub fn services(ui: &mut egui::Ui) {

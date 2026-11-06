@@ -32,10 +32,16 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - theme.rs, liquid.rs, titlebar.rs, i18n.rs : repris de WorkTable (allégés)
 - sidebar.rs : pilule flottante, logo et icônes vectorielles
 - prefs.rs : réglages (data/prefs.json en dev)
-- tabs/ : mod.rs (en-tête, carte, onglets), settings.rs
+- server.rs : liaison avec l'agent (fil en arrière-plan, demande toutes les 2 s)
+- tabs/ : mod.rs (en-tête, carte, onglets vides), dashboard.rs, settings.rs
+
+## Agent (crates/agent/src)
+- main.rs : serveur HTTP (tiny_http), routes `/api/…` ; écoute sur `NAS_AGENT_ADDR` (défaut 127.0.0.1:7878)
+- sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
+- Routes et types JSON : `crates/proto/src/lib.rs`
 
 ## Étapes du projet
 1. Squelette (fait).
 2. Console : thème, barre latérale, barre de titre, onglets vides (fait).
-3. Agent (données simulées) + affichage dans la console.
+3. Agent (mesures réelles via sysinfo) + tableau de bord de la console (fait).
 4. Contrôle des services, journaux en direct.

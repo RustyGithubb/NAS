@@ -7,3 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 nas-proto = { path = "../proto" }
+serde_json = "1.0.154"
+# Mesures du système (processeur, mémoire, disques, températures), sous Linux comme sous Windows.
+sysinfo = "0.37"
+# Serveur HTTP minimal, sans moteur asynchrone : léger pour le Mac mini.
+tiny_http = "0.12"

@@ -10,11 +10,19 @@ use serde::{Deserialize, Serialize};
 use crate::i18n::Language;
 use crate::theme::ThemeId;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Prefs {
     pub theme: ThemeId,
     pub language: Language,
+    /// Adresse de l'agent (« IP:port »).
+    pub agent_addr: String,
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Prefs { theme: ThemeId::default(), language: Language::default(), agent_addr: format!("127.0.0.1:{}", nas_proto::DEFAULT_PORT) }
+    }
 }
 
 fn path() -> Option<PathBuf> {

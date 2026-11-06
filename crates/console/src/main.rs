@@ -7,6 +7,7 @@ mod i18n;
 mod app;
 mod liquid;
 mod prefs;
+mod server;
 mod sidebar;
 mod tabs;
 mod theme;

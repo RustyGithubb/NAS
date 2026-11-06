@@ -158,7 +158,7 @@ pub fn LINK() -> Color32 {
     color(7)
 }
 /// Accent du thème (terracotta en Monochrome) : jour actuel, non lus, pastilles.
-#[allow(non_snake_case, dead_code)]
+#[allow(non_snake_case)]
 pub fn TODAY() -> Color32 {
     color(8)
 }

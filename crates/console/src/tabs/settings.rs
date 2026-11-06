@@ -5,11 +5,14 @@ use eframe::egui::{self, CornerRadius, Rect, Sense, Stroke, vec2};
 use super::{card, header};
 use crate::i18n::Language;
 use crate::prefs::Prefs;
+use crate::server::Link;
 use crate::theme::{self, ThemeId};
 
-pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs) {
-    header(ui, t!("Réglages", "Settings"), t!("Apparence et langue de la console", "Console look and language"));
+pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, link: &Link) {
+    header(ui, t!("Réglages", "Settings"), t!("Serveur, apparence et langue de la console", "Console server, look and language"));
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        card(ui, t!("Serveur", "Server"), |ui| server(ui, prefs, link));
+        ui.add_space(12.0);
         card(ui, t!("Thème", "Theme"), |ui| themes(ui, prefs));
         ui.add_space(12.0);
         card(ui, t!("Langue", "Language"), |ui| {
@@ -60,5 +63,21 @@ fn themes(ui: &mut egui::Ui, prefs: &mut Prefs) {
                 prefs.theme = id;
             }
         }
+    });
+}
+
+/// Adresse de l'agent et état de la liaison.
+fn server(ui: &mut egui::Ui, prefs: &mut Prefs, link: &Link) {
+    ui.label(egui::RichText::new(t!("Adresse de l'agent (IP:port)", "Agent address (IP:port)")).color(theme::TEXT_MUTED()));
+    ui.add(egui::TextEdit::singleline(&mut prefs.agent_addr).desired_width(260.0).font(egui::TextStyle::Monospace));
+    let (dot, text) = match link {
+        Link::Connecting => (theme::TEXT_MUTED(), t!("Connexion…", "Connecting…").to_string()),
+        Link::Online(s) => (theme::TEXT(), tf!("Connecté à {}", "Connected to {}", s.hostname)),
+        Link::Offline(e) => (theme::TODAY(), tf!("Hors ligne : {e}", "Offline: {e}")),
+    };
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(vec2(10.0, 16.0), Sense::hover());
+        ui.painter().circle_filled(r.center(), 4.0, dot);
+        ui.label(text);
     });
 }
