@@ -8,3 +8,4 @@
 - Tableau de bord : affiche cet état en direct ; adresse de l'agent dans Réglages › Serveur.
 - Services : liste avec recherche et filtres, démarrer / arrêter / redémarrer (simulés hors du serveur).
 - Journaux : lignes d'un service en direct, filtre, couleurs selon la gravité.
+- Clé d'accès : l'agent refuse toute demande sans sa clé ; la console la garde dans le coffre de mots de passe de Windows (Réglages › Serveur).

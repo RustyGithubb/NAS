@@ -3,7 +3,7 @@
 use eframe::egui::{self, CornerRadius, Margin, Rect, Sense, Stroke, vec2};
 use nas_proto::Status;
 
-use super::{card, header, offline};
+use super::{card, header, unavailable};
 use crate::server::Link;
 use crate::theme;
 
@@ -16,9 +16,8 @@ pub fn show(ui: &mut egui::Ui, link: &Link, addr: &str) {
         Link::Connecting => {
             header(ui, title, &tf!("Connexion à {addr}…", "Connecting to {addr}…"));
         }
-        Link::Offline(err) => {
-            header(ui, title, t!("Hors ligne", "Offline"));
-            offline(ui, err, addr);
+        Link::Offline(_) | Link::Denied => {
+            unavailable(ui, title, link, addr);
         }
         Link::Online(s) => {
             header(ui, title, &format!("● {}  ·  {}", s.hostname, s.os));

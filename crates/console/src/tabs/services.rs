@@ -3,7 +3,7 @@
 use eframe::egui::{self, Stroke};
 use nas_proto::{Action, Service, ServiceState};
 
-use super::{card, header, offline, state_dot};
+use super::{card, header, state_dot, unavailable};
 use crate::server::{Link, Server};
 use crate::theme;
 
@@ -48,9 +48,7 @@ pub struct State {
 /// Renvoie le service dont on veut voir le journal.
 pub fn show(ui: &mut egui::Ui, state: &mut State, server: &Server, link: &Link, addr: &str) -> Option<String> {
     let title = "Services";
-    if let Link::Offline(err) = link {
-        header(ui, title, t!("Hors ligne", "Offline"));
-        offline(ui, err, addr);
+    if unavailable(ui, title, link, addr) {
         return None;
     }
     // Copie des données utiles, pour ne pas garder le verrou pendant le dessin.

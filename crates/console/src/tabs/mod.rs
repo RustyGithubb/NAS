@@ -44,6 +44,36 @@ pub fn offline(ui: &mut egui::Ui, err: &str, addr: &str) {
     });
 }
 
+/// Carte « clé d'accès refusée ».
+pub fn denied(ui: &mut egui::Ui) {
+    card(ui, t!("Clé d'accès refusée", "Access key refused"), |ui| {
+        ui.label(t!(
+            "L'agent répond, mais la clé d'accès est absente ou fausse. Pour l'afficher, sur la machine de l'agent :",
+            "The agent answers, but the access key is missing or wrong. To show it, on the agent's machine:"
+        ));
+        ui.label(egui::RichText::new("cargo run -p nas-agent -- --show-key").monospace().color(theme::TEXT()));
+        ui.label(egui::RichText::new(t!("Puis colle-la dans Réglages › Serveur.", "Then paste it in Settings › Server.")).color(theme::TEXT_MUTED()));
+    });
+}
+
+/// En-tête et carte d'explication si l'agent n'est pas utilisable. Renvoie `true` dans ce cas.
+pub fn unavailable(ui: &mut egui::Ui, title: &str, link: &crate::server::Link, addr: &str) -> bool {
+    use crate::server::Link;
+    match link {
+        Link::Offline(err) => {
+            header(ui, title, t!("Hors ligne", "Offline"));
+            offline(ui, err, addr);
+            true
+        }
+        Link::Denied => {
+            header(ui, title, t!("Accès refusé", "Access refused"));
+            denied(ui);
+            true
+        }
+        Link::Connecting | Link::Online(_) => false,
+    }
+}
+
 /// Pastille d'état d'un service : pleine si actif, creuse si arrêté, accent si en échec.
 pub fn state_dot(ui: &mut egui::Ui, state: nas_proto::ServiceState) {
     use nas_proto::ServiceState as S;

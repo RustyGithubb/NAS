@@ -3,7 +3,7 @@
 use eframe::egui::{self, CornerRadius, Margin, Stroke};
 use nas_proto::LogEntry;
 
-use super::{header, offline};
+use super::{header, unavailable};
 use crate::server::{Link, Server};
 use crate::theme;
 
@@ -22,9 +22,7 @@ impl Default for State {
 
 pub fn show(ui: &mut egui::Ui, state: &mut State, server: &Server, link: &Link, addr: &str) {
     let title = t!("Journaux", "Logs");
-    if let Link::Offline(err) = link {
-        header(ui, title, t!("Hors ligne", "Offline"));
-        offline(ui, err, addr);
+    if unavailable(ui, title, link, addr) {
         return;
     }
     header(ui, title, t!("Ce que les services écrivent, en direct", "What services write, live"));

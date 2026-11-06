@@ -4,8 +4,10 @@
 //! elle-même). Pour la changer : variable d'environnement `NAS_AGENT_ADDR`, par exemple
 //! `NAS_AGENT_ADDR=0.0.0.0:7878` pour écouter sur tout le réseau.
 //! Services et journaux : systemd sur le Mac mini, simulés ailleurs (`NAS_AGENT_MOCK=1` pour forcer).
+//! Chaque demande doit porter la clé d'accès (voir `key.rs`) ; `nas-agent --show-key` l'affiche.
 
 mod backend;
+mod key;
 mod sampler;
 
 use std::sync::{Arc, Mutex};
@@ -25,6 +27,17 @@ fn error(code: u16, msg: &str) -> Reply {
 }
 
 fn main() {
+    let (key, new) = match key::load_or_create() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("NAS agent : clé d'accès impossible à créer ou à lire ({e})");
+            std::process::exit(1);
+        }
+    };
+    if std::env::args().any(|a| a == "--show-key") {
+        println!("{key}");
+        return;
+    }
     let addr = std::env::var("NAS_AGENT_ADDR").unwrap_or_else(|_| format!("127.0.0.1:{}", nas_proto::DEFAULT_PORT));
     // Dernières mesures, tenues à jour par un fil de mesure en arrière-plan.
     let status = Arc::new(Mutex::new(Status::default()));
@@ -40,9 +53,15 @@ fn main() {
     };
     let mode = if backend.simulated() { "services simulés" } else { "services systemd" };
     println!("NAS agent v{} — à l'écoute sur http://{addr} ({mode})", env!("CARGO_PKG_VERSION"));
+    if new {
+        println!("Nouvelle clé d'accès (à copier dans la console, Réglages › Serveur) :\n  {key}");
+    }
+    let file = key::path();
+    println!("Clé d'accès : {} (affichable avec --show-key)", file.canonicalize().unwrap_or(file).display());
 
     for request in server.incoming_requests() {
-        let (code, body) = route(request.method(), request.url(), &status, backend.as_ref());
+        let auth = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str());
+        let (code, body) = if key::authorized(auth, &key) { route(request.method(), request.url(), &status, backend.as_ref()) } else { error(401, "clé d'accès refusée") };
         let header = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("en-tête valide");
         let _ = request.respond(tiny_http::Response::from_string(body).with_status_code(code).with_header(header));
     }

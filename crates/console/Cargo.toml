@@ -11,6 +11,8 @@ nas-proto = { path = "../proto" }
 chrono = "0.4.45"
 directories = "6.0.0"
 eframe = { version = "0.37.0", features = ["glow"] }
+# Clé d'accès de l'agent rangée dans le coffre de mots de passe du système (comme WorkTable).
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Requêtes HTTP vers l'agent (sans moteur asynchrone).

@@ -45,6 +45,10 @@ pub struct NasApp {
     current: Tab,
     prefs: Prefs,
     server: Server,
+    /// Clé d'accès de l'agent (coffre de mots de passe du système, pas `prefs.json`).
+    key: String,
+    /// Erreur à l'enregistrement de la clé.
+    key_error: Option<String>,
     services: tabs::services::State,
     logs: tabs::logs::State,
 }
@@ -54,8 +58,9 @@ impl NasApp {
         let prefs = Prefs::load();
         crate::i18n::set(prefs.language);
         theme::set_theme(ctx, prefs.theme);
-        let server = Server::start(ctx, &prefs.agent_addr);
-        NasApp { current: Tab::Dashboard, prefs, server, services: Default::default(), logs: Default::default() }
+        let key = crate::secret::load();
+        let server = Server::start(ctx, &prefs.agent_addr, &key);
+        NasApp { current: Tab::Dashboard, prefs, server, key, key_error: None, services: Default::default(), logs: Default::default() }
     }
 }
 
@@ -63,6 +68,7 @@ impl eframe::App for NasApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let window = ui.max_rect();
         let before = self.prefs.clone();
+        let key_before = self.key.clone();
         let link = self.server.link();
 
         // L'onglet ouvert occupe toute la fenêtre ; la marge gauche réserve la place de la barre flottante.
@@ -73,7 +79,7 @@ impl eframe::App for NasApp {
             Tab::Services => open_logs = tabs::services::show(ui, &mut self.services, &self.server, &link, &self.prefs.agent_addr),
             Tab::Logs => tabs::logs::show(ui, &mut self.logs, &self.server, &link, &self.prefs.agent_addr),
             Tab::Files => tabs::files(ui),
-            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &link),
+            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link),
         });
         // « Journal » cliqué sur un service : ouvre son journal.
         if let Some(unit) = open_logs {
@@ -93,8 +99,12 @@ impl eframe::App for NasApp {
                 theme::set_theme(ui.ctx(), self.prefs.theme);
             }
             crate::i18n::set(self.prefs.language);
-            self.server.set_addr(&self.prefs.agent_addr);
+            self.server.set_target(&self.prefs.agent_addr, &self.key);
             self.prefs.save();
+        }
+        if self.key != key_before {
+            self.server.set_target(&self.prefs.agent_addr, &self.key);
+            self.key_error = crate::secret::save(self.key.trim()).err();
         }
     }
 }
