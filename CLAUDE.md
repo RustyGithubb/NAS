@@ -32,11 +32,12 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - theme.rs, liquid.rs, titlebar.rs, i18n.rs : repris de WorkTable (allégés)
 - sidebar.rs : pilule flottante, logo et icônes vectorielles
 - prefs.rs : réglages (data/prefs.json en dev)
-- server.rs : liaison avec l'agent (fil en arrière-plan, demande toutes les 2 s)
-- tabs/ : mod.rs (en-tête, carte, onglets vides), dashboard.rs, settings.rs
+- server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions et journaux dans des fils à part)
+- tabs/ : mod.rs (en-tête, carte, carte hors ligne, onglet Fichiers vide), dashboard.rs, services.rs, logs.rs, settings.rs
 
 ## Agent (crates/agent/src)
 - main.rs : serveur HTTP (tiny_http), routes `/api/…` ; écoute sur `NAS_AGENT_ADDR` (défaut 127.0.0.1:7878)
+- backend/ : services et journaux — systemd.rs (`systemctl`, `journalctl`), mock.rs (simulation hors Linux ou `NAS_AGENT_MOCK=1`)
 - sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
 - Routes et types JSON : `crates/proto/src/lib.rs`
 
@@ -44,4 +45,5 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 1. Squelette (fait).
 2. Console : thème, barre latérale, barre de titre, onglets vides (fait).
 3. Agent (mesures réelles via sysinfo) + tableau de bord de la console (fait).
-4. Contrôle des services, journaux en direct.
+4. Contrôle des services, journaux en direct (fait ; backend systemd pas encore testé sur une vraie machine).
+5. À venir : clé d'accès entre console et agent (obligatoire avant d'installer l'agent sur le Mac mini).

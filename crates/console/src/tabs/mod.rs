@@ -1,6 +1,8 @@
-//! Onglets. Services, Journaux et Fichiers sont encore vides.
+//! Onglets. Fichiers est encore vide.
 
 pub mod dashboard;
+pub mod logs;
+pub mod services;
 pub mod settings;
 
 use eframe::egui::{self, CornerRadius, Margin, Stroke};
@@ -31,21 +33,36 @@ pub fn card<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) 
         .inner
 }
 
+/// Carte « agent injoignable », commune aux onglets qui ont besoin de l'agent.
+pub fn offline(ui: &mut egui::Ui, err: &str, addr: &str) {
+    card(ui, t!("Agent injoignable", "Agent unreachable"), |ui| {
+        ui.label(egui::RichText::new(tf!("{addr} : {err}.", "{addr}: {err}.")).color(theme::TEXT_MUTED()));
+        ui.add_space(4.0);
+        ui.label(t!("En développement, lance l'agent sur ce PC dans un autre terminal :", "During development, start the agent on this PC in another terminal:"));
+        ui.label(egui::RichText::new("cargo run -p nas-agent").monospace().color(theme::TEXT()));
+        ui.label(egui::RichText::new(t!("L'adresse se change dans Réglages › Serveur.", "The address can be changed in Settings › Server.")).color(theme::TEXT_MUTED()));
+    });
+}
+
+/// Pastille d'état d'un service : pleine si actif, creuse si arrêté, accent si en échec.
+pub fn state_dot(ui: &mut egui::Ui, state: nas_proto::ServiceState) {
+    use nas_proto::ServiceState as S;
+    let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 18.0), egui::Sense::hover());
+    let c = r.center();
+    let p = ui.painter();
+    match state {
+        S::Active => p.circle_filled(c, 4.0, theme::TEXT()),
+        S::Inactive => p.circle_stroke(c, 3.5, Stroke::new(1.2, theme::TEXT_MUTED())),
+        S::Failed => p.circle_filled(c, 4.0, theme::TODAY()),
+        S::Changing => p.circle_stroke(c, 3.5, Stroke::new(1.5, theme::TEXT())),
+    };
+}
+
 /// Carte « bientôt disponible » d'un onglet pas encore construit.
 fn coming(ui: &mut egui::Ui, what: &str) {
     card(ui, t!("Bientôt", "Coming soon"), |ui| {
         ui.label(egui::RichText::new(what).color(theme::TEXT_MUTED()));
     });
-}
-
-pub fn services(ui: &mut egui::Ui) {
-    header(ui, "Services", t!("Programmes qui tournent en permanence sur le serveur", "Programs running permanently on the server"));
-    coming(ui, t!("Liste des services, avec démarrer, arrêter et redémarrer.", "Service list, with start, stop and restart."));
-}
-
-pub fn logs(ui: &mut egui::Ui) {
-    header(ui, t!("Journaux", "Logs"), t!("Ce que les services écrivent, en direct", "What services write, live"));
-    coming(ui, t!("Journal de chaque service, mis à jour en continu.", "Each service's log, updated continuously."));
 }
 
 pub fn files(ui: &mut egui::Ui) {

@@ -3,7 +3,7 @@
 use eframe::egui::{self, CornerRadius, Margin, Rect, Sense, Stroke, vec2};
 use nas_proto::Status;
 
-use super::{card, header};
+use super::{card, header, offline};
 use crate::server::Link;
 use crate::theme;
 
@@ -25,16 +25,6 @@ pub fn show(ui: &mut egui::Ui, link: &Link, addr: &str) {
             online(ui, s);
         }
     }
-}
-
-fn offline(ui: &mut egui::Ui, err: &str, addr: &str) {
-    card(ui, t!("Agent injoignable", "Agent unreachable"), |ui| {
-        ui.label(egui::RichText::new(tf!("{addr} : {err}.", "{addr}: {err}.")).color(theme::TEXT_MUTED()));
-        ui.add_space(4.0);
-        ui.label(t!("En développement, lance l'agent sur ce PC dans un autre terminal :", "During development, start the agent on this PC in another terminal:"));
-        ui.label(egui::RichText::new("cargo run -p nas-agent").monospace().color(theme::TEXT()));
-        ui.label(egui::RichText::new(t!("L'adresse se change dans Réglages › Serveur.", "The address can be changed in Settings › Server.")).color(theme::TEXT_MUTED()));
-    });
 }
 
 fn online(ui: &mut egui::Ui, s: &Status) {

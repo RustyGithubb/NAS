@@ -45,6 +45,8 @@ pub struct NasApp {
     current: Tab,
     prefs: Prefs,
     server: Server,
+    services: tabs::services::State,
+    logs: tabs::logs::State,
 }
 
 impl NasApp {
@@ -53,7 +55,7 @@ impl NasApp {
         crate::i18n::set(prefs.language);
         theme::set_theme(ctx, prefs.theme);
         let server = Server::start(ctx, &prefs.agent_addr);
-        NasApp { current: Tab::Dashboard, prefs, server }
+        NasApp { current: Tab::Dashboard, prefs, server, services: Default::default(), logs: Default::default() }
     }
 }
 
@@ -65,13 +67,19 @@ impl eframe::App for NasApp {
 
         // L'onglet ouvert occupe toute la fenêtre ; la marge gauche réserve la place de la barre flottante.
         let margin = Margin { left: theme::CONTENT_LEFT_INSET, right: 32, top: 36, bottom: 32 };
+        let mut open_logs = None;
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| match self.current {
             Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr),
-            Tab::Services => tabs::services(ui),
-            Tab::Logs => tabs::logs(ui),
+            Tab::Services => open_logs = tabs::services::show(ui, &mut self.services, &self.server, &link, &self.prefs.agent_addr),
+            Tab::Logs => tabs::logs::show(ui, &mut self.logs, &self.server, &link, &self.prefs.agent_addr),
             Tab::Files => tabs::files(ui),
             Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &link),
         });
+        // « Journal » cliqué sur un service : ouvre son journal.
+        if let Some(unit) = open_logs {
+            self.logs.unit = Some(unit);
+            self.current = Tab::Logs;
+        }
 
         // Barre latérale et pilule du bas, au premier plan.
         if let Some(t) = sidebar::show(ui.ctx(), window, self.current).or(sidebar::bottom_buttons(ui.ctx(), window, self.current)) {
