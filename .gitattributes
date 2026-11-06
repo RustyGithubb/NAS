@@ -1,0 +1,4 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+# Données de l'app (notes…) : octets conservés tels quels, sans conversion des fins de ligne.
+/data/** -text

@@ -1,0 +1,9 @@
+[package]
+name = "nas-agent"
+description = "Agent installé sur le serveur (Linux)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nas-proto = { path = "../proto" }

@@ -1,0 +1,8 @@
+[package]
+name = "nas-proto"
+description = "Données échangées entre la console et l'agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]

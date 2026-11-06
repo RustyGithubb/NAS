@@ -1,0 +1,17 @@
+[package]
+name = "nas-console"
+description = "Console de pilotage du serveur (Windows)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nas-proto = { path = "../proto" }
+directories = "6.0.0"
+eframe = { version = "0.37.0", features = ["glow"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+# Langue de Windows (choix « Langue du système »).
+windows-sys = { version = "0.59", features = ["Win32_Globalization"] }
