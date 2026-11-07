@@ -14,6 +14,12 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - L'agent tourne sur une machine faible (2 cœurs, 8 Go, disque lent) : dépendances légères, pas de Docker.
 - Git : ne jamais commit/branch/tag/push. Donne-moi les commandes à lancer moi-même (je travaille sur plusieurs PC).
 
+## Mise en page des onglets (comme WorkTable)
+- En-tête : `tabs::header(sur-titre, titre, info, accent)` (→ `widgets::page_header_with`).
+- Contenu : panneaux pleine hauteur avec `widgets::pane_columns` ; colonne de gauche `widgets::SIDE_W` (260 px) avec `side_label` + `nav_row` (pastille liquide), puis liste (`pane_title`, `list_item`) et/ou détail.
+- États vides : `widgets::empty_state` ; agent indisponible : `tabs::unavailable`.
+- Réglages : seule exception, colonne de cartes de 760 px qui défile.
+
 ## Économie de tokens
 - Ne lis pas Cargo.lock, target/, data/.
 - Pour reprendre un élément de WorkTable : Grep dans `../WorkTable/src`, puis Read avec offset/limit.
@@ -34,7 +40,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - prefs.rs : réglages (data/prefs.json en dev ; thème, langue, adresse, animation, polices), enregistrés 0,5 s après la dernière modification
 - secret.rs : clé d'accès dans le coffre du système (crate keyring), jamais dans prefs.json
 - server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions et journaux dans des fils à part)
-- tabs/ : mod.rs (en-tête, carte, carte hors ligne, onglet Fichiers vide), dashboard.rs, services.rs, sites.rs, logs.rs, settings.rs
+- tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (vide), settings.rs
 
 ## Agent (crates/agent/src)
 - main.rs : serveur HTTP (tiny_http), routes `/api/…` ; écoute sur `NAS_AGENT_ADDR` (défaut 127.0.0.1:7878)

@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, RichText};
 
-use super::header;
+use super::{header, row, separator};
 use crate::liquid::Liquid;
 use crate::prefs::{Animation, Curve, Prefs};
 use crate::server::Link;
@@ -11,7 +11,11 @@ use crate::{theme, widgets};
 
 /// `key` : clé d'accès de l'agent (enregistrée à part, dans le coffre du système).
 pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link) {
-    header(ui, t!("Réglages", "Settings"), t!("Serveur, apparence et langue de la console", "Console server, look and language"));
+    let badge = match link {
+        Link::Online(s) => tf!("Connecté à {}", "Connected to {}", s.hostname),
+        _ => String::new(),
+    };
+    header(ui, t!("Application", "Application"), t!("Réglages", "Settings"), &badge, false);
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         let width = ui.available_width().min(760.0);
         ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
@@ -23,23 +27,6 @@ pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: O
             section(ui, t!("À propos", "About"), &[("Version", t!("Console NAS", "NAS console"), Value::Text(env!("CARGO_PKG_VERSION")))]);
         });
     });
-}
-
-/// Ligne de réglage : intitulé et aide à gauche, contrôle à droite (comme WorkTable).
-fn row(ui: &mut egui::Ui, label: &str, hint: &str, add: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(label);
-            ui.label(RichText::new(hint).small().color(theme::TEXT_FAINT()));
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
-    });
-}
-
-fn separator(ui: &mut egui::Ui) {
-    ui.add_space(4.0);
-    ui.separator();
-    ui.add_space(4.0);
 }
 
 /// Serveur : adresse de l'agent, clé d'accès, état de la liaison.

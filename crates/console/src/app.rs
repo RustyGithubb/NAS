@@ -56,6 +56,8 @@ pub struct NasApp {
     /// Erreur à l'enregistrement de la clé.
     key_error: Option<String>,
     services: tabs::services::State,
+    sites: tabs::sites::State,
+    files: tabs::files::State,
     logs: tabs::logs::State,
 }
 
@@ -67,7 +69,18 @@ impl NasApp {
         theme::set_fonts(ctx, &prefs.fonts);
         let key = crate::secret::load();
         let server = Server::start(ctx, &prefs.agent_addr, &key);
-        NasApp { current: Tab::Dashboard, prefs, prefs_dirty: None, server, key, key_error: None, services: Default::default(), logs: Default::default() }
+        NasApp {
+            current: Tab::Dashboard,
+            prefs,
+            prefs_dirty: None,
+            server,
+            key,
+            key_error: None,
+            services: Default::default(),
+            sites: Default::default(),
+            files: Default::default(),
+            logs: Default::default(),
+        }
     }
 }
 
@@ -92,9 +105,9 @@ impl eframe::App for NasApp {
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| match self.current {
             Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr),
             Tab::Services => open_logs = tabs::services::show(ui, &mut self.services, &self.server, &link, &self.prefs.agent_addr),
-            Tab::Sites => open_logs = tabs::sites::show(ui, &self.server, &link, &self.prefs.agent_addr),
+            Tab::Sites => open_logs = tabs::sites::show(ui, &mut self.sites, &self.server, &link, &self.prefs.agent_addr),
             Tab::Logs => tabs::logs::show(ui, &mut self.logs, &self.server, &link, &self.prefs.agent_addr),
-            Tab::Files => tabs::files(ui),
+            Tab::Files => tabs::files::show(ui, &mut self.files),
             Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link),
         });
         // « Journal » cliqué sur un service : ouvre son journal.

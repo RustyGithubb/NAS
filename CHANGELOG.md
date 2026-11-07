@@ -11,3 +11,8 @@
 - Clé d'accès : l'agent refuse toute demande sans sa clé ; la console la garde dans le coffre de mots de passe de Windows (Réglages › Serveur).
 - Repris de WorkTable : réglages des animations (vitesse, opacité, courbe, aperçu), police et taille par groupe de textes (titres, interface, texte, code), roue du logo qui fait trembler les cartes ; Réglages organisés comme WorkTable.
 - Sites : sites web hébergés (WordPress, pages fixes) — en ligne / maintenance / coupé, certificat HTTPS, dossier des médias, sauvegarde immédiate (simulés hors du serveur).
+- Onglets uniformisés comme WorkTable : même en-tête (sur-titre, titre, info), panneaux pleine hauteur, colonne de gauche de 260 px ; Services en trois colonnes (filtres, liste, détail), Journaux et Sites en liste + détail.
+- Éléments en échec sur fond teinté d'accent (avec liseré), éléments arrêtés ou coupés « creusés » (fond sombre, contour, texte estompé).
+- Journaux façon Terminal Windows (couleurs « Campbell ») : barre d'onglets avec le service ouvert, terminal qui occupe tout le panneau, curseur clignotant.
+- Tableau de bord sur une seule grille : même écart entre tuiles, entre tuiles et panneaux, et entre panneaux ; panneaux alignés sur les tuiles.
+- Tableau de bord : processeur sur toute la largeur (cœurs en grille équilibrée), stockage en dessous avec l'espace libre ; jauges sur toute la largeur disponible.

@@ -177,6 +177,12 @@ pub fn is_light() -> bool {
     (b.r() as u32 + b.g() as u32 + b.b() as u32) > 3 * 128
 }
 
+/// Gris de la maquette sombre (0x0E = fond … 0xED = texte) traduit dans le thème courant.
+pub fn gray(level: u8) -> Color32 {
+    let t = ((level as f32 - 14.0) / (237.0 - 14.0)).clamp(0.0, 1.0);
+    blend(BG(), TEXT(), t)
+}
+
 /// Voile de survol (blanc translucide en sombre, couleur du texte en clair).
 pub fn overlay(alpha: u8) -> Color32 {
     let c = TEXT();

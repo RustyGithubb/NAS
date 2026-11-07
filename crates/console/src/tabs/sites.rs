@@ -1,76 +1,92 @@
-//! Sites : sites web hébergés sur le serveur (WordPress, pages fixes), avec mise en ligne,
-//! maintenance, coupure et sauvegarde.
+//! Sites : sites web hébergés sur le serveur (WordPress, pages fixes). Liste à gauche, détail
+//! du site choisi à droite : mise en ligne, maintenance, coupure, sauvegarde.
 
 use eframe::egui::{self, RichText};
 use nas_proto::{Site, SiteAction, SiteKind, SiteState};
 
-use super::{card, header, unavailable};
+use super::{header, result_line, row, separator, unavailable};
+use crate::liquid::Liquid;
 use crate::server::{Link, Server};
 use crate::{theme, widgets};
 
+/// Site choisi (gardé d'une visite à l'autre).
+#[derive(Default)]
+pub struct State {
+    selected: Option<String>,
+}
+
 /// Renvoie le service dont on veut voir le journal (celui de Caddy, le serveur web).
-pub fn show(ui: &mut egui::Ui, server: &Server, link: &Link, addr: &str) -> Option<String> {
-    let title = "Sites";
-    if unavailable(ui, title, link, addr) {
+pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, addr: &str) -> Option<String> {
+    let (overline, title) = (t!("Hébergement", "Hosting"), "Sites");
+    if unavailable(ui, overline, title, link, addr) {
         return None;
     }
     let (sites, pending, last) = {
         let d = server.data();
         (d.sites.clone(), d.sites_pending.clone(), d.last_site_action.clone())
     };
-    let Some(sites) = sites else {
-        header(ui, title, t!("Chargement…", "Loading…"));
-        return None;
-    };
+    let sites = sites.unwrap_or_default();
     let online = sites.list.iter().filter(|s| s.state == SiteState::Online).count();
-    let mut sub = tf!("{} en ligne sur {}", "{} online out of {}", online, sites.list.len());
+    let mut badge = tf!("{} en ligne sur {}", "{} online out of {}", online, sites.list.len());
     if sites.simulated {
-        sub.push_str(t!("  ·  données simulées", "  ·  simulated data"));
+        badge.push_str(t!("  ·  simulé", "  ·  simulated"));
     }
-    header(ui, title, &sub);
-
-    // Résultat de la dernière action (ligne de hauteur fixe : la liste ne bouge pas).
-    ui.horizontal(|ui| {
-        ui.set_min_height(22.0);
-        if let Some((name, action, result)) = &last {
-            let done = match action {
-                SiteAction::Set(SiteState::Online) => t!("mis en ligne", "put online"),
-                SiteAction::Set(SiteState::Maintenance) => t!("mis en maintenance", "put in maintenance"),
-                SiteAction::Set(SiteState::Offline) => t!("coupé", "taken offline"),
-                SiteAction::Backup => t!("sauvegardé", "backed up"),
-            };
-            let text = if result.ok {
-                RichText::new(format!("✓ {name} {done}.")).color(theme::TEXT_MUTED())
-            } else {
-                RichText::new(tf!("✗ {name} : {}", "✗ {name}: {}", result.message)).color(theme::TODAY())
-            };
-            ui.add(egui::Label::new(text).truncate());
-            if ui.small_button("✕").on_hover_text(t!("Masquer", "Hide")).clicked() {
-                server.data().last_site_action = None;
-            }
-        }
-    });
-    ui.add_space(6.0);
+    header(ui, overline, title, &badge, false);
+    if st.selected.as_ref().is_none_or(|n| !sites.list.iter().any(|s| &s.name == n)) {
+        st.selected = sites.list.first().map(|s| s.name.clone());
+    }
 
     let mut open_logs = None;
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        let width = ui.available_width().min(860.0);
-        ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
-            if sites.list.is_empty() {
-                card(ui, t!("Aucun site", "No site"), |ui| {
-                    ui.label(RichText::new(t!("Aucun site n'est encore déclaré sur le serveur.", "No site is declared on the server yet.")).color(theme::TEXT_MUTED()));
-                });
+    widgets::pane_columns(ui, &[widgets::SIDE_W], |i, ui| {
+        if i == 0 {
+            widgets::side_label(ui, "Sites");
+            let mut hl = Liquid::begin(ui, "sites_list");
+            for s in &sites.list {
+                let state = s.state;
+                let tone = if state == SiteState::Offline { widgets::Tone::Off } else { widgets::Tone::Normal };
+                let dot = move |p: &egui::Painter, c: egui::Pos2| {
+                    match state {
+                        SiteState::Online => p.circle_filled(c, 4.0, theme::TEXT()),
+                        SiteState::Maintenance => p.circle_filled(c, 4.0, theme::TODAY()),
+                        SiteState::Offline => p.circle_stroke(c, 3.5, egui::Stroke::new(1.2, theme::TEXT_MUTED())),
+                    };
+                };
+                if widgets::nav_row(ui, &s.name, None, st.selected.as_deref() == Some(&s.name), tone, &mut hl, Some(&dot)).clicked() {
+                    st.selected = Some(s.name.clone());
+                }
             }
-            for site in &sites.list {
+            widgets::nav_end(ui, hl);
+            if sites.list.is_empty() {
+                widgets::empty_state(ui, t!("Aucun site", "No site"), t!("Aucun site déclaré sur le serveur", "No site declared on the server"));
+            }
+        } else {
+            let Some(site) = st.selected.as_ref().and_then(|n| sites.list.iter().find(|s| &s.name == n)) else {
+                ui.add_space(40.0);
+                widgets::empty_state(ui, t!("Aucun site choisi", "No site selected"), t!("Choisis un site à gauche", "Pick a site on the left"));
+                return;
+            };
+            egui::ScrollArea::vertical().id_salt("site_detail").auto_shrink([false, false]).show(ui, |ui| {
                 if let Some(a) = site_card(ui, site, pending.contains(&site.name)) {
                     match a {
                         CardAction::Do(action) => server.site_action(&site.name, action),
                         CardAction::Logs => open_logs = Some("caddy.service".to_string()),
                     }
                 }
-                ui.add_space(12.0);
-            }
-        });
+                if let Some((name, action, result)) = last.as_ref().filter(|l| l.0 == site.name) {
+                    ui.add_space(8.0);
+                    let done = match action {
+                        SiteAction::Set(SiteState::Online) => t!("mis en ligne", "put online"),
+                        SiteAction::Set(SiteState::Maintenance) => t!("mis en maintenance", "put in maintenance"),
+                        SiteAction::Set(SiteState::Offline) => t!("coupé", "taken offline"),
+                        SiteAction::Backup => t!("sauvegardé", "backed up"),
+                    };
+                    let text = if result.ok { format!("{name} {done}.") } else { result.message.clone() };
+                    if result_line(ui, result.ok, &text) {
+                        server.data().last_site_action = None;
+                    }
+                }
+            });
+        }
     });
     open_logs
 }
@@ -82,7 +98,14 @@ enum CardAction {
 
 fn site_card(ui: &mut egui::Ui, s: &Site, busy: bool) -> Option<CardAction> {
     let mut out = None;
-    card(ui, &s.name, |ui| {
+    {
+        let mut logs = false;
+        widgets::pane_title(ui, &s.name, |ui| {
+            logs = ui.button(t!("Journal", "Log")).on_hover_text(t!("Journal du serveur web (Caddy)", "Web server log (Caddy)")).clicked();
+        });
+        if logs {
+            out = Some(CardAction::Logs);
+        }
         // Adresse et type.
         ui.horizontal(|ui| {
             ui.hyperlink_to(RichText::new(&s.domain).color(theme::TEXT()), format!("https://{}", s.domain));
@@ -133,32 +156,8 @@ fn site_card(ui: &mut egui::Ui, s: &Site, busy: bool) -> Option<CardAction> {
                 out = Some(CardAction::Do(SiteAction::Backup));
             }
         });
-        separator(ui);
-
-        row(ui, t!("Journal", "Log"), t!("Journal du serveur web (Caddy)", "Web server log (Caddy)"), |ui| {
-            if ui.button(t!("Ouvrir", "Open")).clicked() {
-                out = Some(CardAction::Logs);
-            }
-        });
-    });
+    }
     out
-}
-
-/// Ligne : intitulé et aide à gauche, contrôle à droite (comme les Réglages).
-fn row(ui: &mut egui::Ui, label: &str, hint: &str, add: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(label);
-            ui.label(RichText::new(hint).small().color(theme::TEXT_FAINT()));
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add);
-    });
-}
-
-fn separator(ui: &mut egui::Ui) {
-    ui.add_space(4.0);
-    ui.separator();
-    ui.add_space(4.0);
 }
 
 /// « 06/11/2026 21:40 », à l'heure locale.
