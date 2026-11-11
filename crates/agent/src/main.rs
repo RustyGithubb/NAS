@@ -9,6 +9,7 @@
 mod backend;
 mod files;
 mod key;
+mod network;
 mod sampler;
 mod sites;
 mod update;
@@ -69,7 +70,8 @@ fn main() {
     println!("Clé d'accès : {} (affichable avec --show-key)", file.canonicalize().unwrap_or(file).display());
 
     let updater = update::Updater::new(backend.simulated());
-    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new(), updater });
+    let network = network::NetMonitor::start(backend.simulated());
+    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new(), updater, network });
     // Une demande = un fil : un gros transfert de fichier ne bloque pas le reste.
     for request in server.incoming_requests() {
         let ctx = ctx.clone();
@@ -85,6 +87,7 @@ struct Ctx {
     sites: Box<dyn sites::SitesBackend>,
     files: files::Files,
     updater: update::Updater,
+    network: network::NetMonitor,
 }
 
 fn handle(ctx: &Ctx, mut request: tiny_http::Request) {
@@ -169,6 +172,11 @@ fn route(method: &tiny_http::Method, url: &str, ctx: &Ctx) -> Reply {
                 Err(message) => json(200, &ActionResult { ok: false, message }),
             }
         }
+        (Get, ["api", "network"]) => json(200, &ctx.network.get()),
+        (Post, ["api", "network", "speedtest"]) => match ctx.network.speedtest() {
+            Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),
+            Err(message) => json(200, &ActionResult { ok: false, message }),
+        },
         (Get, ["api", "update"]) => json(200, &ctx.updater.status()),
         (Post, ["api", "update"]) => match ctx.updater.start() {
             Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),

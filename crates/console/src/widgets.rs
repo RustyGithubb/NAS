@@ -135,7 +135,13 @@ pub type Lead = dyn Fn(&egui::Painter, egui::Pos2);
 /// Ligne de navigation des colonnes de gauche (comme WorkTable) : pastille dessinée par
 /// `lead`, texte, nombre à droite ; la ligne active reçoit la pastille liquide.
 pub fn nav_row(ui: &mut egui::Ui, text: &str, count: Option<usize>, active: bool, tone: Tone, hl: &mut Liquid, lead: Option<&Lead>) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+    nav_row_h(ui, text, count, active, tone, hl, lead, 32.0)
+}
+
+/// `nav_row` de hauteur `h` (volet de l'explorateur, plus serré).
+#[allow(clippy::too_many_arguments)]
+pub fn nav_row_h(ui: &mut egui::Ui, text: &str, count: Option<usize>, active: bool, tone: Tone, hl: &mut Liquid, lead: Option<&Lead>, h: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     // Fond de ton (en échec, éteint) sous la pastille liquide.
     if tone != Tone::Normal {

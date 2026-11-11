@@ -2,6 +2,16 @@
 
 ## Non publié
 ### Ajouts
+- Tableau de bord : panneau Réseau (Wi-Fi, signal, bande et canal, liaison, point d'accès, IP, passerelle, DNS, débit reçu/envoyé en direct sur 5 min, latence et pertes vers la box et internet, coupures Wi-Fi et leur raison, bouton « Tester le débit »), en rouge si signal faible, pertes ou coupure récente. Le stockage passe à droite. Nécessite la mise à jour de l'agent (sinon « Agent trop ancien »).
+- Fichiers : disques connectés listés sous « Ce PC » dans le volet de gauche (nom Windows du disque, clé USB, lecteur réseau…), comme dans l'Explorateur.
+- Fichiers : vignettes des images en vue « Grandes icônes » et dans la Galerie, à la place de l'icône.
+- Fichiers : un onglet tiré par son intitulé hors de la barre d'onglets s'ouvre seul dans sa fenêtre (barre de titre maison, épingle « toujours au premier plan ») ; la fermer le ramène dans l'explorateur. Chaque fenêtre affiche son propre dossier ; copier/coller marche d'une fenêtre à l'autre.
+- Fichiers : aperçu du fichier sélectionné dans le volet Détails à la place de l'icône (images png, jpg, gif, webp, bmp jusqu'à 25 Mo ; début des fichiers texte et de code, 64 Ko).
+### Corrections
+- Fichiers : plus d'espace autour des séparateurs du volet de gauche ; boutons couper / copier / coller / renommer / supprimer retirés de la barre du haut (toujours au clic droit et au clavier).
+- Fichiers : glisser un élément d'un dossier du serveur à un autre le déplace (Ctrl : copie) au lieu de le dupliquer.
+- Fichiers : volet de navigation plus serré (lignes plus basses, sans espace entre elles).
+- Fichiers (Windows) : glisser des éléments hors de la console les dépose dans l'Explorateur ou sur le Bureau. Ceux du serveur sont téléchargés dès que le pointeur sort de la fenêtre (visibles dans Transferts) ; l'Explorateur les copie une fois le téléchargement fini.
 - Fichiers : « Ce PC » dans le volet de gauche (dossiers personnels et disques de cet ordinateur : ouvrir, renommer, nouveau dossier, corbeille de Windows, épingler). Glisser-déposer d'un dossier à un autre (liste, autre onglet — survolé, il passe au premier plan —, volet de gauche) : serveur → PC = téléchargement, PC → serveur = envoi, serveur → serveur ou PC → PC = copie (Maj : déplacement) ; dossiers compris. Copier/coller marche aussi entre le serveur et ce PC. « Télécharger… » demande le dossier de destination. Onglet Transferts : progression, vitesse, temps restant, ✓ ou ✗, Ouvrir / Afficher dans le dossier / Afficher sur le serveur, « Effacer les terminés ».
 - Fichiers : bouton ⧉ pour détacher l'explorateur dans sa propre fenêtre (même barre de titre, épingle « toujours au premier plan », position et taille retenues) ; fermer la fenêtre le ramène dans la console.
 - Fichiers façon Explorateur Windows : onglets (Ctrl+T / Ctrl+W, clic du milieu), barre d'adresse avec recherche dans le dossier, barre de commandes (Nouveau, couper, copier, coller, renommer, supprimer, Trier, Afficher, Détails), volet Accueil / Galerie / épinglés / emplacements, page Accueil (accès rapide, fichiers récents), page Galerie, volet Détails ; menus clic droit sans raccourcis. Protocole v9.

@@ -2,12 +2,12 @@
 //! les 2 secondes ; les actions et la lecture des journaux partent chacune dans leur propre fil.
 //! L'interface lit simplement les derniers résultats (elle ne bloque jamais sur le réseau).
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use nas_proto::{Action, ActionResult, FileOp, Listing, LogEntry, Logs, Root, SearchResult, Services, SiteAction, Sites, Status, UpdateState, UpdateStatus};
+use nas_proto::{Action, ActionResult, FileOp, Listing, LogEntry, Logs, Network, Root, SearchResult, Services, SiteAction, Sites, Status, UpdateState, UpdateStatus};
 
 /// Intervalle entre deux demandes d'état.
 const PERIOD: Duration = Duration::from_secs(2);
@@ -64,18 +64,36 @@ pub struct Shared {
     pub update: Option<Result<UpdateStatus, String>>,
     update_polled: Option<Instant>,
     update_in_flight: bool,
+    /// Réseau du serveur (Tableau de bord) : dernier état reçu, ou erreur.
+    pub network: Option<Result<Network, NetError>>,
+    network_polled: Option<Instant>,
+    network_in_flight: bool,
+}
+
+/// Réseau illisible : agent trop ancien (route absente) ou autre erreur.
+#[derive(Clone, Debug)]
+pub enum NetError {
+    Outdated,
+    Other(String),
 }
 
 /// Onglet Fichiers : emplacements, dossier affiché, recherche, transferts.
 #[derive(Default)]
 pub struct FilesData {
     pub roots: Option<Vec<Root>>,
-    /// Dossier demandé (emplacement, chemin) et son contenu.
-    pub listing_for: Option<(String, String)>,
-    pub listing: Option<Result<Listing, String>>,
-    pub loading: bool,
-    /// Dernière recherche : requête et résultat.
-    pub search: Option<(String, Result<SearchResult, String>)>,
+    /// Contenu des dossiers affichés (emplacement, chemin), un par fenêtre d'explorateur.
+    pub listings: HashMap<(String, String), Result<Listing, String>>,
+    /// Dossiers demandés, pas encore reçus.
+    pub loading: HashSet<(String, String)>,
+    /// Recherches récentes : requête et résultat.
+    pub searches: HashMap<String, Result<SearchResult, String>>,
+    /// Aperçus du volet Détails : (emplacement, chemin, date de modification) et contenu.
+    pub previews: HashMap<(String, String, i64), Result<crate::preview::Preview, String>>,
+    /// Vignettes arrivées (vue en grandes icônes), reprises par l'explorateur qui les a demandées ;
+    /// `None` : image illisible.
+    pub thumbs: HashMap<(String, String, i64), Option<egui::ColorImage>>,
+    /// Éléments copiés ou coupés, en attente de « Coller » (communs à toutes les fenêtres).
+    pub clip: Option<Clip>,
     /// Fichiers modifiés récemment (page Accueil).
     pub recent: Option<Result<SearchResult, String>>,
     /// Résultat de la dernière opération (réussie ?, message).
@@ -83,9 +101,19 @@ pub struct FilesData {
     pub transfers: Vec<Transfer>,
     /// Augmente à chaque fin de transfert ou de copie : les dossiers de ce PC affichés sont relus.
     pub local_gen: u64,
-    /// Un transfert vers le serveur s'est terminé : le dossier affiché est redemandé.
-    pub changed: bool,
+    /// Augmente à chaque modification sur le serveur (opération, envoi terminé) : chaque
+    /// explorateur redemande alors son dossier.
+    pub remote_gen: u64,
     next_transfer: u64,
+}
+
+/// Éléments copiés (ou coupés) : emplacement (`LOCAL` des Fichiers pour ce PC), chemins et
+/// dossier ou non.
+#[derive(Clone)]
+pub struct Clip {
+    pub cut: bool,
+    pub root: String,
+    pub items: Vec<(String, bool)>,
 }
 
 /// Sens d'un transfert.
@@ -163,7 +191,7 @@ impl Tracker {
         let mut s = lock(&self.shared);
         // Le contenu affiché a changé : dossier du serveur redemandé, dossiers du PC relus.
         s.files.local_gen += 1;
-        s.files.changed = true;
+        s.files.remote_gen += 1;
         drop(s);
         self.ctx.request_repaint();
     }
@@ -452,23 +480,20 @@ impl Server {
         self.spawn_files(|a, _, to| get::<Vec<Root>>(a, to, "/api/files/roots"), |f, r| f.roots = r.ok());
     }
 
-    /// Demande le contenu d'un dossier.
+    /// Demande le contenu d'un dossier (l'ancien contenu reste affiché en attendant).
     pub fn files_list(&self, root: &str, path: &str) {
-        {
-            let mut s = self.data();
-            s.files.listing_for = Some((root.to_string(), path.to_string()));
-            s.files.loading = true;
-        }
         let key = (root.to_string(), path.to_string());
+        self.data().files.loading.insert(key.clone());
         let url = format!("/api/files/list?root={}&path={}", urlencoding::encode(root), urlencoding::encode(path));
         self.spawn_files(
             move |a, _, to| get::<Listing>(a, to, &url),
             move |f, r| {
-                // Un autre dossier a été demandé entre-temps : résultat ignoré.
-                if f.listing_for.as_ref() == Some(&key) {
-                    f.listing = Some(r);
-                    f.loading = false;
+                // Assez de dossiers gardés : on repart de zéro.
+                if f.listings.len() > 32 {
+                    f.listings.clear();
                 }
+                f.loading.remove(&key);
+                f.listings.insert(key, r);
             },
         );
     }
@@ -477,7 +502,66 @@ impl Server {
     pub fn files_search(&self, q: &str) {
         let q = q.to_string();
         let url = format!("/api/files/search?q={}", urlencoding::encode(&q));
-        self.spawn_files(move |a, _, to| get::<SearchResult>(a, to, &url), move |f, r| f.search = Some((q, r)));
+        self.spawn_files(
+            move |a, _, to| get::<SearchResult>(a, to, &url),
+            move |f, r| {
+                if f.searches.len() > 32 {
+                    f.searches.clear();
+                }
+                f.searches.insert(q, r);
+            },
+        );
+    }
+
+    /// Vignette d'une image (lue sur ce PC si `local`, sinon récupérée du serveur en mémoire).
+    pub fn files_thumb(&self, root: &str, path: &str, modified: i64, local: bool) {
+        let key = (root.to_string(), path.to_string(), modified);
+        let url = format!("/api/files/download?root={}&path={}", urlencoding::encode(root), urlencoding::encode(path));
+        let file = path.to_string();
+        self.spawn_files(
+            move |_, t, to| -> Result<egui::ColorImage, String> {
+                use std::io::Read;
+                let limit = crate::preview::PreviewKind::Image.limit();
+                let mut buf = Vec::new();
+                if local {
+                    std::fs::File::open(&file).map_err(|e| e.to_string())?.take(limit).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                } else {
+                    to.request(t, "GET", &url).call().map_err(describe)?.into_reader().take(limit).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                }
+                crate::preview::thumbnail(&buf)
+            },
+            move |f, r| {
+                f.thumbs.insert(key, r.ok());
+            },
+        );
+    }
+
+    /// Aperçu d'un fichier (image ou début d'un texte) : lu sur ce PC si `local`, sinon
+    /// récupéré du serveur en mémoire. Résultat dans `FilesData::previews`.
+    pub fn files_preview(&self, root: &str, path: &str, modified: i64, local: bool, kind: crate::preview::PreviewKind) {
+        let key = (root.to_string(), path.to_string(), modified);
+        let url = format!("/api/files/download?root={}&path={}", urlencoding::encode(root), urlencoding::encode(path));
+        let file = path.to_string();
+        self.spawn_files(
+            move |_, t, to| -> Result<crate::preview::Preview, String> {
+                use std::io::Read;
+                let limit = kind.limit();
+                let mut buf = Vec::new();
+                if local {
+                    std::fs::File::open(&file).map_err(|e| e.to_string())?.take(limit).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                } else {
+                    let resp = to.request(t, "GET", &url).call().map_err(describe)?;
+                    resp.into_reader().take(limit).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+                }
+                crate::preview::decode(&buf, kind)
+            },
+            move |f, r| {
+                if f.previews.len() > 8 {
+                    f.previews.clear();
+                }
+                f.previews.insert(key, r);
+            },
+        );
     }
 
     /// Fichiers modifiés récemment, pour la page Accueil.
@@ -506,6 +590,7 @@ impl Server {
                     Ok(res) => (false, res.message),
                     Err(e) => (false, e),
                 });
+                f.remote_gen += 1;
                 me.refresh_files(f);
             },
         );
@@ -529,10 +614,12 @@ impl Server {
     }
 
     /// Télécharge un fichier ou un dossier (avec tout son contenu) du serveur dans `dest_dir`.
-    pub fn download_to(&self, root: &str, path: &str, is_dir: bool, dest_dir: std::path::PathBuf, open: bool) {
+    /// Renvoie le chemin d'arrivée et le numéro du transfert.
+    pub fn download_to(&self, root: &str, path: &str, is_dir: bool, dest_dir: std::path::PathBuf, open: bool) -> (std::path::PathBuf, u64) {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let target = free_local_name(&dest_dir, &name);
         let mut tracker = self.track(&name, Kind::Download, target.clone(), (root.to_string(), path.to_string()));
+        let out = (target.clone(), tracker.id);
         let (agent, transfer, to, root, path) = (self.agent.clone(), self.transfer_agent.clone(), Target::of(&self.data()), root.to_string(), path.to_string());
         std::thread::spawn(move || {
             let get_file = |remote: &str, local: &std::path::Path, tracker: &mut Tracker| -> Result<(), String> {
@@ -577,6 +664,23 @@ impl Server {
             }
             tracker.finish(r);
         });
+        out
+    }
+
+    #[cfg(windows)]
+    /// Ces transferts sont-ils finis ? `None` : pas encore ; sinon : tous réussis ou non.
+    pub fn transfers_done(&self, ids: &[u64]) -> Option<bool> {
+        let d = self.data();
+        let mut ok = true;
+        for id in ids {
+            match d.files.transfers.iter().find(|t| t.id == *id) {
+                Some(t) if !t.done => return None,
+                Some(t) => ok &= t.error.is_none(),
+                // Effacé de la liste : il était terminé.
+                None => {}
+            }
+        }
+        Some(ok)
     }
 
     /// Envoie des fichiers ou des dossiers (avec tout leur contenu) de ce PC dans le dossier
@@ -655,11 +759,6 @@ impl Server {
         self.data().files.transfers.retain(|t| !t.done);
     }
 
-    /// Un transfert vers le serveur s'est terminé depuis la dernière fois ?
-    pub fn take_changed(&self) -> bool {
-        std::mem::take(&mut self.data().files.changed)
-    }
-
     /// Copie pour lancer des demandes depuis un autre fil (fenêtre « Ouvrir » de Windows).
     #[cfg_attr(not(windows), allow(dead_code))]
     pub fn handle_pub(&self) -> Server {
@@ -671,15 +770,12 @@ impl Server {
         Server { shared: self.shared.clone(), agent: self.agent.clone(), transfer_agent: self.transfer_agent.clone(), ctx: self.ctx.clone() }
     }
 
-    /// Redemande le dossier affiché et les emplacements (après une modification). Appelée avec
-    /// le verrou déjà pris : les demandes partent dans un autre fil.
-    fn refresh_files(&self, f: &mut FilesData) {
-        let Some((root, path)) = f.listing_for.clone() else { return };
+    /// Redemande l'espace libre des emplacements après une modification (les dossiers affichés
+    /// sont redemandés par chaque explorateur, voir `remote_gen`). Appelée avec le verrou déjà
+    /// pris : la demande part dans un autre fil.
+    fn refresh_files(&self, _f: &mut FilesData) {
         let me = self.handle();
-        std::thread::spawn(move || {
-            me.files_list(&root, &path);
-            me.files_roots();
-        });
+        std::thread::spawn(move || me.files_roots());
     }
 
     /// À appeler à chaque image par les Réglages : redemande l'état des mises à jour de l'agent,
@@ -704,6 +800,59 @@ impl Server {
             s.update_in_flight = false;
             if to.current(&s) {
                 s.update = Some(r);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// À appeler à chaque image par le Tableau de bord : redemande l'état du réseau chaque seconde.
+    pub fn poll_network(&self) {
+        let to = {
+            let mut s = self.data();
+            let every = Duration::from_secs(1);
+            self.ctx.request_repaint_after(every);
+            if s.network_in_flight || s.network_polled.is_some_and(|t| t.elapsed() < every) {
+                return;
+            }
+            s.network_in_flight = true;
+            s.network_polled = Some(Instant::now());
+            Target::of(&s)
+        };
+        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let r = match to.request(&agent, "GET", "/api/network").call() {
+                Ok(r) => r.into_json::<Network>().map_err(|_| NetError::Other(t!("réponse illisible", "unreadable response").into())),
+                // Route inconnue : agent d'avant le Tableau de bord réseau.
+                Err(ureq::Error::Status(404, _)) => Err(NetError::Outdated),
+                Err(e) => Err(NetError::Other(describe(e))),
+            };
+            let mut s = lock(&shared);
+            s.network_in_flight = false;
+            if to.current(&s) {
+                s.network = Some(r);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Lance un test de débit internet sur le serveur ; le résultat arrive par `poll_network`.
+    pub fn speedtest(&self) {
+        let to = Target::of(&self.data());
+        if let Some(Ok(n)) = self.data().network.as_mut() {
+            n.speedtest.state = nas_proto::SpeedState::Running;
+        }
+        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let r = match to.request(&agent, "POST", "/api/network/speedtest").call() {
+                Ok(r) => r.into_json::<ActionResult>().unwrap_or_else(|e| ActionResult { ok: false, message: e.to_string() }),
+                Err(e) => ActionResult { ok: false, message: describe(e) },
+            };
+            if !r.ok {
+                let mut s = lock(&shared);
+                if let Some(Ok(n)) = s.network.as_mut() {
+                    n.speedtest.state = nas_proto::SpeedState::Failed;
+                    n.speedtest.message = r.message;
+                }
             }
             ctx.request_repaint();
         });

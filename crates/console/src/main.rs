@@ -5,9 +5,13 @@
 #[macro_use]
 mod i18n;
 mod app;
+mod drives;
 mod icons;
 mod liquid;
+#[cfg(windows)]
+mod ole_drag;
 mod prefs;
+mod preview;
 mod secret;
 mod server;
 mod sidebar;

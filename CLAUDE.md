@@ -39,6 +39,9 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - sidebar.rs : pilule flottante, logo vectoriel (roue au clic → tremblement des cartes), icônes
 - prefs.rs : réglages (data/prefs.json en dev ; thème, langue, adresse, animation, polices), enregistrés 0,5 s après la dernière modification
 - secret.rs : clé d'accès dans le coffre du système (crate keyring), jamais dans prefs.json
+- drives.rs : disques de ce PC et leur nom (GetVolumeInformationW sous Windows)
+- preview.rs : aperçus du volet Détails des Fichiers (images décodées hors de l'interface, début des textes) et vignettes de la vue en grandes icônes
+- ole_drag.rs (Windows seulement) : glisser des fichiers de la console vers l'Explorateur / le Bureau (glisser-déposer OLE, objets COM écrits à la main avec windows-sys)
 - server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions, journaux, fichiers et transferts dans des fils à part ; téléchargements dans Téléchargements\NAS)
 - icons.rs : émojis Twemoji (assets/emoji, CC-BY 4.0) par type de fichier et par emplacement
 - tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (explorateur façon Windows : onglets, barre d'adresse et de commandes, Accueil, Galerie, Détails, liste / grandes icônes, recherche instantanée, presse-papiers, épinglés, « Ce PC », glisser-déposer serveur ↔ PC, onglet Transferts), settings.rs
@@ -50,6 +53,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - files/ : emplacements (`NAS_AGENT_ROOTS="Nom=chemin;…"`), opérations (corbeille `.corbeille`), index.rs = index en mémoire façon Everything (refait toutes les 5 min ou après une modification)
 - sites/ : sites web — caddy.rs (fichier par site dans /etc/caddy/sites, sauvegardes tar + mysqldump), mock.rs
 - sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
+- network.rs : réseau du serveur (route par défaut, compteurs /sys, nmcli, ip, ping vers la box et 1.1.1.1, coupures lues dans le journal de NetworkManager et wpa_supplicant, test de débit avec curl) ; simulé hors du Mac. Route `/api/network` ajoutée sans changer la version du protocole (404 = agent trop ancien)
 - update.rs : recherche de mise à jour (lance le service `nas-agent-update`, lit /var/lib/nas-agent/update.json)
 - Routes et types JSON : `crates/proto/src/lib.rs`
 

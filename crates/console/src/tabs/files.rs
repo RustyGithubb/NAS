@@ -5,7 +5,8 @@
 //! instantanée d'Everything (index tenu par l'agent). « Ce PC » montre aussi les dossiers et les
 //! disques de cet ordinateur ; glisser des éléments d'un dossier à un autre (autre onglet, volet
 //! de gauche) les télécharge, les envoie ou les copie (Maj : déplace). Onglet Transferts :
-//! progression des envois et des téléchargements.
+//! progression des envois et des téléchargements. Sous Windows, glisser des éléments hors de la
+//! fenêtre les dépose dans l'Explorateur ou sur le Bureau (voir `ole_drag`).
 //!
 //! Raccourcis : Entrée ouvrir · Retour arrière dossier parent · Alt+←/→ précédent/suivant ·
 //! F2 renommer · Suppr corbeille · Ctrl+A tout · Ctrl+C/X/V · F5 actualiser · Ctrl+F rechercher ·
@@ -22,7 +23,8 @@ use super::{header, unavailable};
 use crate::icons::{self, Emoji};
 use crate::liquid::Liquid;
 use crate::prefs::{Favorite, Place, Prefs};
-use crate::server::{Kind, Link, Server, Transfer};
+use crate::preview::{Preview, PreviewKind};
+use crate::server::{Clip, Kind, Link, Server, Transfer};
 use crate::tabs::dashboard::bytes;
 use crate::{theme, widgets};
 
@@ -31,6 +33,10 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 const ROW_H: f32 = 30.0;
 const CELL: egui::Vec2 = egui::Vec2::new(132.0, 132.0);
 const STATUS_H: f32 = 30.0;
+/// Hauteur d'une ligne du volet de navigation.
+const NAV_H: f32 = 26.0;
+/// Hauteur maximale de l'aperçu dans le volet Détails.
+const PREVIEW_H: f32 = 260.0;
 /// Largeur du volet Détails.
 const DETAILS_W: f32 = 280.0;
 /// Hauteur de la barre d'onglets, de la barre d'adresse et de la barre de commandes.
@@ -51,23 +57,18 @@ enum Sort {
     Size,
 }
 
-/// Éléments copiés ou coupés, en attente de « Coller » (communs à tous les onglets).
-#[derive(Clone)]
-struct Clip {
-    cut: bool,
-    root: String,
-    /// Chemin, et dossier ou non.
-    items: Vec<(String, bool)>,
-}
-
 /// Éléments en cours de glisser-déposer.
 struct DragItems {
     root: String,
     items: Vec<(String, bool)>,
 }
 
+/// Numéro unique de chaque onglet (identifiants egui distincts d'une fenêtre à l'autre).
+static NEXT_TAB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// Un onglet d'explorateur.
-struct Tab {
+pub struct Tab {
+    uid: u64,
     place: Place,
     back: Vec<Place>,
     fwd: Vec<Place>,
@@ -89,6 +90,8 @@ struct Tab {
     requested: bool,
     /// Dossier de ce PC lu : chemin, génération (voir `FilesData::local_gen`), contenu.
     local: Option<(String, u64, Result<Vec<Item>, String>)>,
+    /// Dernière modification du serveur prise en compte (voir `FilesData::remote_gen`).
+    remote_gen: u64,
 }
 
 impl Tab {
@@ -96,6 +99,7 @@ impl Tab {
         // Galerie : les plus récents d'abord.
         let (sort, desc) = if place == Place::Gallery { (Sort::Modified, true) } else { (Sort::Name, false) };
         Tab {
+            uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             place,
             back: Vec::new(),
             fwd: Vec::new(),
@@ -112,6 +116,7 @@ impl Tab {
             commit: false,
             requested: false,
             local: None,
+            remote_gen: 0,
         }
     }
 
@@ -196,9 +201,13 @@ fn fav_label(f: &Favorite) -> String {
 
 /// État de l'onglet Fichiers (gardé d'une visite à l'autre).
 pub struct State {
+    /// Numéro de cet explorateur (identifiants egui propres à sa fenêtre).
+    uid: u64,
     tabs: Vec<Tab>,
     active: usize,
-    clip: Option<Clip>,
+    /// Explorateur de la console (ou sa fenêtre volante) : onglets enregistrés dans les
+    /// réglages. Sinon : fenêtre d'un onglet détaché.
+    main: bool,
     /// Texte à placer dans le presse-papiers du système (sinon Ctrl+V n'arrive pas jusqu'à egui).
     copy_text: Option<String>,
     roots_asked: bool,
@@ -210,25 +219,142 @@ pub struct State {
     toggle_float: bool,
     /// Onglet survolé pendant un glisser, et depuis quand.
     hover_tab: Option<(usize, Instant)>,
+    /// Fichiers glissés hors de la console : s'ils reviennent y être déposés, on les ignore.
+    outgoing: Vec<PathBuf>,
+    /// Onglet en cours de glisser par son intitulé : numéro et dernière position du pointeur.
+    tab_drag: Option<(usize, egui::Pos2)>,
+    /// Onglet détaché pendant cette image, et position (écran) où l'ouvrir.
+    detached: Option<(Tab, egui::Pos2)>,
+    /// Aperçu affiché : clé et image prête à dessiner.
+    preview_tex: Option<((String, String, i64), egui::TextureHandle)>,
+    /// Dernier aperçu demandé (pas redemandé à chaque image).
+    preview_asked: Option<(String, String, i64)>,
+    /// Vignettes de la vue en grandes icônes.
+    thumbs: Thumbs,
+    /// Disques de ce PC, sous « Ce PC ».
+    drives: Drives,
+}
+
+/// Disques de ce PC, relus dans un autre fil (un lecteur réseau peut tarder à répondre).
+#[derive(Default)]
+struct Drives {
+    list: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    read: Option<Instant>,
+}
+
+impl Drives {
+    fn get(&mut self) -> Vec<(String, String)> {
+        if self.read.is_none_or(|t| t.elapsed() >= Duration::from_secs(3)) {
+            self.read = Some(Instant::now());
+            let list = self.list.clone();
+            std::thread::spawn(move || {
+                let now = crate::drives::list();
+                if let Ok(mut l) = list.lock() {
+                    *l = now;
+                }
+            });
+        }
+        self.list.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+}
+
+/// Vignettes : textures prêtes (`None` : image illisible) et demandes en cours.
+#[derive(Default)]
+struct Thumbs {
+    ready: std::collections::HashMap<(String, String, i64), Option<egui::TextureHandle>>,
+    asked: std::collections::HashMap<(String, String, i64), Instant>,
+}
+
+/// Vignettes demandées en même temps, au plus.
+const THUMBS_AT_ONCE: usize = 6;
+
+impl Thumbs {
+    /// Vignette de l'image, si elle est prête ; sinon la demande (quelques-unes à la fois).
+    fn get(&mut self, ui: &egui::Ui, server: &Server, it: &Item) -> Option<egui::TextureHandle> {
+        let key = (it.root.clone(), it.path.clone(), it.entry.modified_ms);
+        if let Some(t) = self.ready.get(&key) {
+            return t.clone();
+        }
+        if let Some(img) = server.data().files.thumbs.remove(&key) {
+            self.asked.remove(&key);
+            if self.ready.len() > 400 {
+                self.ready.clear();
+            }
+            let tex = img.map(|img| ui.ctx().load_texture(format!("files_thumb_{}", key.1), img, egui::TextureOptions::LINEAR));
+            self.ready.insert(key, tex.clone());
+            return tex;
+        }
+        // Demande sans réponse (agent changé entre-temps) : oubliée au bout de 20 s.
+        self.asked.retain(|_, t| t.elapsed() < Duration::from_secs(20));
+        if !self.asked.contains_key(&key) && self.asked.len() < THUMBS_AT_ONCE {
+            server.files_thumb(&it.root, &it.path, it.entry.modified_ms, it.local());
+            self.asked.insert(key, Instant::now());
+        }
+        ui.ctx().request_repaint_after(Duration::from_millis(200));
+        None
+    }
 }
 
 impl Default for State {
     fn default() -> Self {
         State {
+            uid: NEXT_TAB.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             tabs: vec![Tab::new(Place::Home)],
             active: 0,
-            clip: None,
+            main: true,
             copy_text: None,
             roots_asked: false,
             restored: false,
             floating: false,
             toggle_float: false,
             hover_tab: None,
+            outgoing: Vec::new(),
+            tab_drag: None,
+            detached: None,
+            preview_tex: None,
+            preview_asked: None,
+            thumbs: Thumbs::default(),
+            drives: Drives::default(),
         }
     }
 }
 
+/// Ce que l'explorateur demande à la fenêtre qui l'affiche.
+#[derive(Default)]
+pub struct Out {
+    /// Détacher tout l'explorateur dans sa fenêtre (ou l'y ramener).
+    pub toggle_float: bool,
+    /// Un onglet détaché : explorateur de sa nouvelle fenêtre, et position (écran) du coin.
+    pub detach: Option<(State, egui::Pos2)>,
+}
+
 impl State {
+    /// Explorateur d'une fenêtre ne contenant que cet onglet.
+    fn single(tab: Tab) -> State {
+        State { tabs: vec![tab], active: 0, main: false, restored: true, ..Default::default() }
+    }
+
+    /// Reprend les onglets d'une fenêtre fermée.
+    pub fn adopt(&mut self, other: State) {
+        self.tabs.extend(other.tabs);
+        self.activate(self.tabs.len() - 1);
+    }
+
+    /// Onglets déjà repris des réglages ?
+    pub fn restored(&self) -> bool {
+        self.restored
+    }
+
+    /// Lieux des onglets (enregistrés dans les réglages).
+    pub fn places(&self) -> Vec<Place> {
+        self.tabs.iter().map(|t| t.place.clone()).collect()
+    }
+
+    /// Titre de la fenêtre d'un onglet détaché.
+    pub fn title(&self) -> String {
+        self.tabs[self.active].title()
+    }
+
     fn tab(&mut self) -> &mut Tab {
         &mut self.tabs[self.active]
     }
@@ -341,15 +467,9 @@ fn this_pc() -> Vec<Item> {
             }
         }
     }
-    #[cfg(windows)]
-    for c in b'C'..=b'Z' {
-        let root = format!("{}:\\", c as char);
-        if Path::new(&root).exists() {
-            v.push(dir(&format!("{}:", c as char), Path::new(&root)));
-        }
+    for (name, root) in crate::drives::list() {
+        v.push(dir(&name, Path::new(&root)));
     }
-    #[cfg(not(windows))]
-    v.push(dir("/", Path::new("/")));
     v
 }
 
@@ -366,8 +486,10 @@ enum Do {
     Open(Item),
     Go(Place),
     Download(Vec<Item>),
-    /// Éléments déposés dans un dossier (emplacement, chemin) ; `true` : déplacer.
-    Drop(std::sync::Arc<DragItems>, String, String, bool),
+    /// Éléments déposés dans un dossier (emplacement, chemin), avec les touches tenues.
+    Drop(std::sync::Arc<DragItems>, String, String, egui::Modifiers),
+    /// Onglet détaché, lâché à cette position (dans la fenêtre).
+    Detach(usize, egui::Pos2),
     Rename(Item),
     Copy(bool),
     Paste,
@@ -385,38 +507,37 @@ enum Do {
     ToggleFloat,
 }
 
-/// `floating` : dans la fenêtre volante (pas d'en-tête de page). Renvoie `true` si l'utilisateur
-/// demande de détacher l'explorateur (ou de le ramener dans la console).
-pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, addr: &str, prefs: &mut Prefs, floating: bool) -> bool {
+/// `floating` : dans une fenêtre à part (pas d'en-tête de page).
+pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, addr: &str, prefs: &mut Prefs, floating: bool) -> Out {
     st.floating = floating;
     let (overline, title) = (t!("Stockage", "Storage"), t!("Fichiers", "Files"));
     if unavailable(ui, overline, title, link, addr) {
-        return false;
+        return Out::default();
     }
     if !st.roots_asked {
         st.roots_asked = true;
         server.files_roots();
     }
-    if !st.restored {
+    if !st.restored && st.main {
         st.restored = true;
         if !prefs.files_tabs.is_empty() {
             st.tabs = prefs.files_tabs.iter().cloned().map(Tab::new).collect();
         }
         st.activate(prefs.files_active);
     }
-    let (roots, listing, loading, search, recent, last, transfers, local_gen) = {
+    // Contenu de l'onglet au premier plan : demandé une fois, puis après chaque modification
+    // sur le serveur (faite d'ici ou d'une autre fenêtre).
+    let (remote_gen, local_gen) = {
         let d = server.data();
-        let f = &d.files;
-        (f.roots.clone().unwrap_or_default(), f.listing.clone(), f.loading, f.search.clone(), f.recent.clone(), f.last.clone(), f.transfers.clone(), f.local_gen)
+        (d.files.remote_gen, d.files.local_gen)
     };
-    // Envoi terminé : le dossier affiché (et l'espace libre) sont redemandés.
-    if server.take_changed() && matches!(st.tab().place, Place::Folder { .. }) {
-        st.tab().requested = false;
-        server.files_roots();
-    }
-
-    // Contenu de l'onglet au premier plan, demandé une fois.
     let tab = st.tab();
+    if tab.remote_gen != remote_gen {
+        tab.remote_gen = remote_gen;
+        if !matches!(tab.place, Place::Local { .. } | Place::Transfers) {
+            tab.requested = false;
+        }
+    }
     if !tab.requested {
         tab.requested = true;
         match &tab.place {
@@ -444,6 +565,18 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
     } else if searching && tab.query != tab.sent_query {
         ui.ctx().request_repaint_after(SEARCH_DEBOUNCE);
     }
+
+    // Données de cet onglet seulement (d'autres fenêtres peuvent afficher d'autres dossiers).
+    let (roots, listing, loading, search, recent, last, transfers) = {
+        let d = server.data();
+        let f = &d.files;
+        let key = tab.folder().map(|(r, p)| (r.to_string(), p.to_string()));
+        let listing = key.as_ref().and_then(|k| f.listings.get(k).cloned());
+        let loading = key.as_ref().is_some_and(|k| f.loading.contains(k));
+        let q = if searching { tab.sent_query.trim().to_string() } else { GALLERY_Q.to_string() };
+        let search = f.searches.get(&q).cloned().map(|r| (q, r));
+        (f.roots.clone().unwrap_or_default(), listing, loading, search, f.recent.clone(), f.last.clone(), f.transfers.clone())
+    };
 
     let mut items = items_of(tab, &listing, &search, &recent);
     let unsorted = tab.place == Place::Home || tab.place == (Place::Local { path: String::new() });
@@ -473,7 +606,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
     // Fichiers glissés depuis Windows : envoyés dans le dossier affiché.
     let tab = &st.tabs[st.active];
     let drop_target = tab.dest();
-    let dropped: Vec<PathBuf> = ui.ctx().input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+    let dropped: Vec<PathBuf> =
+        ui.ctx().input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty() && !st.outgoing.contains(p)).collect());
     if !dropped.is_empty()
         && let Some((r, p)) = &drop_target
     {
@@ -522,10 +656,12 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
                 );
             }
         }
-        _ => details(ui, &st.tabs[st.active], &items, &roots),
+        _ => details(ui, st, server, &items, &roots),
     });
 
     drag_ghost(ui.ctx());
+    #[cfg(windows)]
+    drag_out(ui.ctx(), st, server);
     for d in todo {
         run(d, st, server, prefs, &items);
     }
@@ -533,13 +669,21 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
     if let Some(text) = st.copy_text.take() {
         ui.ctx().copy_text(text);
     }
-    // Onglets ouverts retrouvés au prochain lancement.
-    let places: Vec<Place> = st.tabs.iter().map(|t| t.place.clone()).collect();
-    if prefs.files_tabs != places {
-        prefs.files_tabs = places;
+    // Onglets ouverts retrouvés au prochain lancement (ceux des fenêtres détachées sont
+    // ajoutés par la console).
+    if st.main {
+        let places = st.places();
+        if prefs.files_tabs != places {
+            prefs.files_tabs = places;
+        }
+        prefs.files_active = st.active;
     }
-    prefs.files_active = st.active;
-    std::mem::take(&mut st.toggle_float)
+    // Onglet détaché : sa fenêtre s'ouvre là où il a été lâché.
+    let detach = st.detached.take().map(|(tab, pos)| {
+        let origin = ui.ctx().input(|i| i.viewport().inner_rect.map(|r| r.min)).unwrap_or_default();
+        (State::single(tab), origin + pos.to_vec2())
+    });
+    Out { toggle_float: std::mem::take(&mut st.toggle_float), detach }
 }
 
 /// Éléments de l'onglet : résultats de recherche (limités au dossier affiché), contenu du
@@ -603,12 +747,15 @@ fn chrome(ui: &mut egui::Ui, st: &mut State, server: &Server, prefs: &mut Prefs,
 fn tab_bar(ui: &mut egui::Ui, st: &mut State, todo: &mut Vec<Do>) {
     let dragging = egui::DragAndDrop::has_payload_of_type::<DragItems>(ui.ctx());
     let mut hovered_tab = None;
+    let last_drag = st.tab_drag;
+    let mut tab_drag = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let n = st.tabs.len();
         let w = ((ui.available_width() - 40.0) / n as f32 - 4.0).clamp(90.0, 220.0);
         for (i, t) in st.tabs.iter().enumerate() {
-            let (r, resp) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
+            let (r, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
+            let resp = ui.interact(r, egui::Id::unique(("files_tab", t.uid)), Sense::click_and_drag());
             let active = i == st.active;
             let p = ui.painter();
             if active {
@@ -623,7 +770,7 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut State, todo: &mut Vec<Do>) {
             let g = p.layout_job(job);
             p.galley(egui::pos2(r.left() + 30.0, r.center().y - g.size().y / 2.0), g, theme::TEXT());
             // × : sur l'onglet actif ou survolé (il en reste toujours un).
-            let close_resp = ui.interact(close, egui::Id::unique(("files_tab_close", i)), Sense::click());
+            let close_resp = ui.interact(close, egui::Id::unique(("files_tab_close", t.uid)), Sense::click());
             if n > 1 && (active || resp.hovered() || close_resp.hovered()) {
                 if close_resp.hovered() {
                     ui.painter().rect_filled(close, CornerRadius::same(4), theme::overlay(12));
@@ -637,6 +784,24 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut State, todo: &mut Vec<Do>) {
             }
             if resp.middle_clicked() && n > 1 {
                 todo.push(Do::CloseTab(i));
+            }
+            // Intitulé tiré hors de la barre d'onglets : l'onglet part dans sa propre fenêtre.
+            let away = |p: egui::Pos2| (p.y - r.center().y).abs() > 45.0;
+            if n > 1 && resp.dragged() {
+                let pos = resp.interact_pointer_pos().or(last_drag.map(|d| d.1));
+                if let Some(pos) = pos {
+                    tab_drag = Some((i, pos));
+                    if away(pos) {
+                        ghost(ui.ctx(), pos, &tf!("Ouvrir « {} » dans une fenêtre", "Open “{}” in a window", t.title()));
+                    }
+                }
+            }
+            if n > 1
+                && resp.drag_stopped()
+                && let Some(pos) = resp.interact_pointer_pos().filter(|p| ui.ctx().input(|i| i.viewport_rect().contains(*p))).or(last_drag.map(|d| d.1))
+                && away(pos)
+            {
+                todo.push(Do::Detach(i, pos));
             }
             // Glisser : déposé sur l'onglet = dans son dossier ; survolé un instant = au premier plan.
             if dragging && resp.contains_pointer() {
@@ -652,7 +817,7 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut State, todo: &mut Vec<Do>) {
             if let Some(items) = resp.dnd_release_payload::<DragItems>()
                 && let Some((root, path)) = t.dest()
             {
-                todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers.shift)));
+                todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers)));
             }
         }
         if ui
@@ -664,12 +829,16 @@ fn tab_bar(ui: &mut egui::Ui, st: &mut State, todo: &mut Vec<Do>) {
         }
         // À droite : détacher l'explorateur dans sa fenêtre, ou l'y ramener.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !st.main {
+                return;
+            }
             let tip = if st.floating { t!("Ramener dans la console", "Bring back into the console") } else { t!("Détacher dans une fenêtre", "Detach into a window") };
             if ui.add(egui::Button::new(RichText::new("⧉").size(16.0)).frame(false).min_size(vec2(30.0, 28.0))).on_hover_text(tip).clicked() {
                 todo.push(Do::ToggleFloat);
             }
         });
     });
+    st.tab_drag = tab_drag;
     st.hover_tab = match (hovered_tab, st.hover_tab) {
         (Some(i), Some((h, since))) if h == i => Some((h, since)),
         (Some(i), _) => Some((i, Instant::now())),
@@ -774,7 +943,7 @@ fn address_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, roots: &[nas_
             _ => t!("Rechercher partout", "Search everywhere").to_string(),
         };
         let resp = ui
-            .add(egui::TextEdit::singleline(&mut tab.query).id(egui::Id::unique("files_search")).hint_text(scope).desired_width(search_w).margin(vec2(10.0, 8.0)))
+            .add(egui::TextEdit::singleline(&mut tab.query).id(egui::Id::unique(("files_search", tab.uid))).hint_text(scope).desired_width(search_w).margin(vec2(10.0, 8.0)))
             .on_hover_text(t!("Comme Everything : plusieurs mots, *.png, ext:jpg;png, dossier:, fichier:", "Like Everything: several words, *.png, ext:jpg;png, folder:, file:"));
         if resp.changed() {
             tab.query_edited = Some(Instant::now());
@@ -786,10 +955,8 @@ fn address_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, roots: &[nas_
 
 /// Nouveau ▾ | Couper Copier Coller Renommer Supprimer | Trier ▾ Afficher ▾ … Détails.
 fn command_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, prefs: &mut Prefs, todo: &mut Vec<Do>) {
-    let has_clip = st.clip.is_some();
     let tab = st.tab();
     let in_folder = tab.dest().is_some();
-    let n_sel = tab.selected.len();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.add_enabled_ui(in_folder, |ui| {
@@ -814,25 +981,6 @@ fn command_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, prefs: &mut P
             });
         });
         let _ = server;
-        sep_v(ui);
-        let icon = |ui: &mut egui::Ui, enabled: bool, glyph: &str, tip: &str| {
-            ui.add_enabled(enabled, egui::Button::new(RichText::new(glyph).size(16.0)).frame(false).min_size(vec2(32.0, 30.0))).on_hover_text(tip).clicked()
-        };
-        if icon(ui, n_sel > 0, "✂", t!("Couper (Ctrl+X)", "Cut (Ctrl+X)")) {
-            todo.push(Do::Copy(true));
-        }
-        if icon(ui, n_sel > 0, "🗐", t!("Copier (Ctrl+C)", "Copy (Ctrl+C)")) {
-            todo.push(Do::Copy(false));
-        }
-        if icon(ui, has_clip && in_folder, "📋", t!("Coller (Ctrl+V)", "Paste (Ctrl+V)")) {
-            todo.push(Do::Paste);
-        }
-        if icon(ui, n_sel == 1, "✏", t!("Renommer (F2)", "Rename (F2)")) {
-            todo.push(Do::Rename(Item { root: String::new(), path: String::new(), parent: String::new(), entry: Entry::default() }));
-        }
-        if icon(ui, n_sel > 0, "🗑", t!("Mettre à la corbeille (Suppr)", "Move to trash (Del)")) {
-            todo.push(Do::Delete);
-        }
         sep_v(ui);
         ui.menu_button(RichText::new(t!("⇅  Trier  ▾", "⇅  Sort  ▾")).size(13.5), |ui| {
             ui.set_min_width(180.0);
@@ -884,10 +1032,13 @@ fn sep_v(ui: &mut egui::Ui) {
 // --- Volet de navigation ----------------------------------------------------------------
 
 /// Accueil, Galerie | favoris épinglés | emplacements du serveur.
-fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root], running: usize, todo: &mut Vec<Do>) {
+fn side(ui: &mut egui::Ui, st: &mut State, prefs: &Prefs, roots: &[nas_proto::Root], running: usize, todo: &mut Vec<Do>) {
+    let drives = st.drives.get();
     let tab = &st.tabs[st.active];
     let here = if tab.searching() { None } else { Some(&tab.place) };
-    let mut hl = Liquid::begin(ui, "files_nav");
+    // Lignes serrées, comme le volet de navigation de l'Explorateur.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let mut hl = Liquid::begin(ui, ("files_nav", st.uid));
     nav_place(ui, &mut hl, here, todo, t!("Accueil", "Home"), Place::Home, Emoji::Home, false);
     nav_place(ui, &mut hl, here, todo, t!("Galerie", "Gallery"), Place::Gallery, Emoji::Image, false);
     nav_sep(ui);
@@ -928,9 +1079,26 @@ fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root],
     }
     nav_sep(ui);
     nav_place(ui, &mut hl, here, todo, t!("Ce PC", "This PC"), Place::Local { path: String::new() }, Emoji::Computer, false);
+    // Disques, en retrait sous « Ce PC » (liste relue en arrière-plan toutes les 3 s).
+    for (name, root) in drives {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(16.0);
+            nav_place(ui, &mut hl, here, todo, &name, Place::Local { path: root.clone() }, Emoji::Disc, false).on_hover_text(&root);
+        });
+    }
     // Transferts : nombre en cours à droite.
     let lead = |p: &egui::Painter, c: egui::Pos2| icons::paint(p, Rect::from_center_size(c, vec2(18.0, 18.0)), Emoji::Archive);
-    let r = widgets::nav_row(ui, t!("Transferts", "Transfers"), (running > 0).then_some(running), here == Some(&Place::Transfers), widgets::Tone::Normal, &mut hl, Some(&lead));
+    let r = widgets::nav_row_h(
+        ui,
+        t!("Transferts", "Transfers"),
+        (running > 0).then_some(running),
+        here == Some(&Place::Transfers),
+        widgets::Tone::Normal,
+        &mut hl,
+        Some(&lead),
+        NAV_H,
+    );
     if r.clicked() {
         todo.push(Do::Go(Place::Transfers));
     }
@@ -942,7 +1110,7 @@ fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root],
 #[allow(clippy::too_many_arguments)]
 fn nav_place(ui: &mut egui::Ui, hl: &mut Liquid, here: Option<&Place>, todo: &mut Vec<Do>, text: &str, place: Place, e: Emoji, pin: bool) -> egui::Response {
     let lead = move |p: &egui::Painter, c: egui::Pos2| icons::paint(p, Rect::from_center_size(c, vec2(18.0, 18.0)), e);
-    let r = widgets::nav_row(ui, text, None, here == Some(&place), widgets::Tone::Normal, hl, Some(&lead));
+    let r = widgets::nav_row_h(ui, text, None, here == Some(&place), widgets::Tone::Normal, hl, Some(&lead), NAV_H);
     if pin {
         ui.painter().text(egui::pos2(r.rect.right() - 12.0, r.rect.center().y), Align2::CENTER_CENTER, "📌", FontId::proportional(11.0), theme::TEXT_FAINT());
     }
@@ -963,17 +1131,17 @@ fn nav_place(ui: &mut egui::Ui, hl: &mut Liquid, here: Option<&Place>, todo: &mu
             ui.painter().rect_stroke(r.rect, CornerRadius::same(8), Stroke::new(1.5, theme::TEXT_MUTED()), egui::StrokeKind::Inside);
         }
         if let Some(items) = r.dnd_release_payload::<DragItems>() {
-            todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers.shift)));
+            todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers)));
         }
     }
     r
 }
 
 fn nav_sep(ui: &mut egui::Ui) {
-    ui.add_space(6.0);
+    ui.add_space(10.0);
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, theme::BORDER()));
-    ui.add_space(6.0);
+    ui.add_space(10.0);
 }
 
 // --- Contenu ----------------------------------------------------------------------------
@@ -994,7 +1162,8 @@ fn main_view(
 ) {
     // Contenu + barre d'état = hauteur du panneau, au pixel près (même bas que les autres panneaux).
     let h = (ui.available_height() - STATUS_H - ui.spacing().item_spacing.y).max(40.0);
-    let tab = st.tab();
+    let State { tabs, active, thumbs, .. } = st;
+    let tab = &mut tabs[*active];
     let searching = tab.searching();
     ui.allocate_ui(vec2(ui.available_width(), h), |ui| {
         ui.set_min_size(vec2(ui.available_width(), h));
@@ -1055,16 +1224,16 @@ fn main_view(
         if !items.is_empty() {
             // Galerie : toujours en grandes icônes, avec le dossier de chaque élément.
             let wide = searching || gallery_page;
-            if prefs.files_gallery || gallery_page { gallery(ui, tab, items, wide, todo) } else { list(ui, tab, items, wide, todo) }
+            if prefs.files_gallery || gallery_page { gallery(ui, tab, thumbs, server, items, wide, todo) } else { list(ui, tab, items, wide, todo) }
         }
         // Déposé ailleurs que sur un dossier : dans le dossier affiché.
         if let Some((root, path)) = tab.dest() {
-            let r = ui.interact(view, egui::Id::unique("files_view_drop"), Sense::hover());
+            let r = ui.interact(view, egui::Id::unique(("files_view_drop", tab.uid)), Sense::hover());
             if r.dnd_hover_payload::<DragItems>().is_some() {
                 ui.painter().rect_stroke(view, CornerRadius::same(8), Stroke::new(1.5, theme::TEXT_FAINT()), egui::StrokeKind::Inside);
             }
             if let Some(items) = r.dnd_release_payload::<DragItems>() {
-                todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers.shift)));
+                todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers)));
             }
         }
     });
@@ -1072,7 +1241,7 @@ fn main_view(
 
 /// Page Accueil : Accès rapide (favoris et emplacements en grandes icônes), puis fichiers récents.
 fn home(ui: &mut egui::Ui, tab: &mut Tab, prefs: &Prefs, roots: &[nas_proto::Root], items: &[Item], todo: &mut Vec<Do>) {
-    egui::ScrollArea::vertical().id_salt("files_home").auto_shrink([false, false]).show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt(("files_home", tab.uid)).auto_shrink([false, false]).show(ui, |ui| {
         section_title(ui, t!("Accès rapide", "Quick access"));
         let mut quick: Vec<(String, String, Place, Emoji)> = prefs
             .favorites
@@ -1131,7 +1300,15 @@ fn section_title(ui: &mut egui::Ui, text: &str) {
 
 // --- Volet Détails ----------------------------------------------------------------------
 
-fn details(ui: &mut egui::Ui, tab: &Tab, items: &[Item], roots: &[nas_proto::Root]) {
+fn details(ui: &mut egui::Ui, st: &mut State, server: &Server, items: &[Item], roots: &[nas_proto::Root]) {
+    // Contenu plus haut que le volet (grand aperçu) : il défile, le bas reste aligné.
+    let h = ui.available_height();
+    egui::ScrollArea::vertical().id_salt(("files_details", st.uid)).max_height(h).auto_shrink([false, false]).show(ui, |ui| details_body(ui, st, server, items, roots));
+}
+
+fn details_body(ui: &mut egui::Ui, st: &mut State, server: &Server, items: &[Item], roots: &[nas_proto::Root]) {
+    let State { tabs, active, preview_tex, preview_asked, .. } = st;
+    let tab = &tabs[*active];
     let sel: Vec<&Item> = items.iter().filter(|i| tab.selected.contains(&i.key())).collect();
     let big = |ui: &mut egui::Ui, e: Emoji| {
         ui.add_space(24.0);
@@ -1151,7 +1328,14 @@ fn details(ui: &mut egui::Ui, tab: &Tab, items: &[Item], roots: &[nas_proto::Roo
     match sel.as_slice() {
         [one] => {
             let kind = icons::kind(&one.entry.name, one.entry.is_dir).1;
-            big(ui, one.emoji());
+            // Aperçu à la place de l'icône quand le fichier peut être lu.
+            let shown = match crate::preview::kind_of(&one.entry.name, one.entry.size).filter(|_| !one.entry.is_dir) {
+                Some(k) => preview(ui, server, preview_tex, preview_asked, one, k),
+                None => false,
+            };
+            if !shown {
+                big(ui, one.emoji());
+            }
             title(ui, &one.entry.name);
             field(ui, t!("Type", "Type"), kind);
             if !one.entry.is_dir {
@@ -1185,6 +1369,72 @@ fn details(ui: &mut egui::Ui, tab: &Tab, items: &[Item], roots: &[nas_proto::Roo
     }
 }
 
+/// Aperçu du fichier : demandé une fois, puis dessiné. Renvoie `false` s'il n'y en a pas
+/// (illisible) : l'icône est alors affichée.
+fn preview(
+    ui: &mut egui::Ui,
+    server: &Server,
+    tex: &mut Option<((String, String, i64), egui::TextureHandle)>,
+    asked: &mut Option<(String, String, i64)>,
+    it: &Item,
+    kind: PreviewKind,
+) -> bool {
+    let key = (it.root.clone(), it.path.clone(), it.entry.modified_ms);
+    ui.add_space(12.0);
+    let w = ui.available_width();
+    if let Some((k, t)) = tex.as_ref()
+        && *k == key
+    {
+        let size = t.size_vec2();
+        let scale = (w / size.x).min(PREVIEW_H / size.y).min(2.0);
+        let (r, _) = ui.allocate_exact_size(vec2(w, size.y * scale), Sense::hover());
+        ui.painter().image(t.id(), Rect::from_center_size(r.center(), size * scale), Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        ui.add_space(12.0);
+        return true;
+    }
+    enum Got {
+        Image(egui::ColorImage),
+        Text(String, bool),
+        Failed,
+    }
+    let got = server.data().files.previews.get(&key).map(|r| match r {
+        Ok(Preview::Image(img)) => Got::Image(img.clone()),
+        Ok(Preview::Text(t, cut)) => Got::Text(t.clone(), *cut),
+        Err(_) => Got::Failed,
+    });
+    match got {
+        None => {
+            if asked.as_ref() != Some(&key) {
+                *asked = Some(key);
+                server.files_preview(&it.root, &it.path, it.entry.modified_ms, it.local(), kind);
+            }
+            let (r, _) = ui.allocate_exact_size(vec2(w, 112.0), Sense::hover());
+            ui.put(Rect::from_center_size(r.center(), vec2(24.0, 24.0)), egui::Spinner::new());
+            ui.add_space(12.0);
+            true
+        }
+        Some(Got::Failed) => false,
+        Some(Got::Image(img)) => {
+            *tex = Some((key, ui.ctx().load_texture("files_preview", img, egui::TextureOptions::LINEAR)));
+            ui.ctx().request_repaint();
+            true
+        }
+        Some(Got::Text(text, cut)) => {
+            egui::Frame::new().fill(theme::BG()).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::both().id_salt(("files_preview", &key.0, &key.1)).max_height(PREVIEW_H).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.add(egui::Label::new(RichText::new(text).monospace().size(11.5).color(theme::TEXT_MUTED())).extend());
+                });
+            });
+            if cut {
+                ui.label(RichText::new(t!("Début du fichier (64 Ko)", "Start of the file (64 KB)")).small().color(theme::TEXT_FAINT()));
+            }
+            ui.add_space(12.0);
+            true
+        }
+    }
+}
+
 // --- Vue en liste ------------------------------------------------------------------------
 
 fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: &mut Vec<Do>) {
@@ -1207,7 +1457,7 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
         }
         let right = cols.get(i + 1).map(|c| c.2).unwrap_or(hr.right());
         let cell = Rect::from_min_max(egui::pos2(if i == 0 { hr.left() } else { *x - 4.0 }, hr.top()), egui::pos2(right, hr.bottom()));
-        let resp = ui.interact(cell, egui::Id::unique(("files_col", i)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let resp = ui.interact(cell, egui::Id::unique(("files_col", st.uid, i)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
         let arrow = if st.sort == *sort { if st.desc { " ▼" } else { " ▲" } } else { "" };
         let color = if st.sort == *sort || resp.hovered() { theme::TEXT() } else { theme::TEXT_MUTED() };
         ui.painter().text(egui::pos2(*x, hr.center().y), *align, format!("{label}{arrow}"), FontId::proportional(12.5), color);
@@ -1218,7 +1468,7 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
     ui.painter().hline(hr.x_range(), hr.bottom(), Stroke::new(1.0, theme::BORDER()));
     ui.add_space(4.0);
 
-    egui::ScrollArea::vertical().id_salt("files_list").auto_shrink([false, false]).show_rows(ui, ROW_H, items.len(), |ui, range| {
+    egui::ScrollArea::vertical().id_salt(("files_list", st.uid)).auto_shrink([false, false]).show_rows(ui, ROW_H, items.len(), |ui, range| {
         ui.spacing_mut().item_spacing.y = 0.0;
         for i in range {
             let it = &items[i];
@@ -1269,19 +1519,20 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
 
 // --- Vue en galerie ----------------------------------------------------------------------
 
-fn gallery(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: &mut Vec<Do>) {
+#[allow(clippy::too_many_arguments)]
+fn gallery(ui: &mut egui::Ui, st: &mut Tab, thumbs: &mut Thumbs, server: &Server, items: &[Item], searching: bool, todo: &mut Vec<Do>) {
     let w = ui.available_width();
     let cols = ((w + 8.0) / (CELL.x + 8.0)).floor().max(1.0) as usize;
     let gap = (w - cols as f32 * CELL.x) / (cols as f32 - 1.0).max(1.0);
     let rows = items.len().div_ceil(cols);
-    egui::ScrollArea::vertical().id_salt("files_gallery").auto_shrink([false, false]).show_rows(ui, CELL.y + 8.0, rows, |ui, range| {
+    egui::ScrollArea::vertical().id_salt(("files_gallery", st.uid)).auto_shrink([false, false]).show_rows(ui, CELL.y + 8.0, rows, |ui, range| {
         for row in range {
             let (line, _) = ui.allocate_exact_size(vec2(w, CELL.y + 8.0), Sense::hover());
             for c in 0..cols {
                 let i = row * cols + c;
                 let Some(it) = items.get(i) else { break };
                 let r = Rect::from_min_size(line.min + vec2(c as f32 * (CELL.x + gap), 0.0), CELL);
-                let resp = ui.interact(r, egui::Id::unique(("files_cell", i)), Sense::click_and_drag());
+                let resp = ui.interact(r, egui::Id::unique(("files_cell", st.uid, i)), Sense::click_and_drag());
                 let sel = st.selected.contains(&it.key());
                 let p = ui.painter();
                 if sel {
@@ -1289,7 +1540,19 @@ fn gallery(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, tod
                 } else if resp.hovered() {
                     p.rect_filled(r, CornerRadius::same(10), theme::overlay(6));
                 }
-                icons::paint(p, Rect::from_center_size(egui::pos2(r.center().x, r.top() + 44.0), vec2(56.0, 56.0)), it.emoji());
+                // Image : sa vignette à la place de l'icône (dès qu'elle est arrivée).
+                let thumb = if !it.entry.is_dir && crate::preview::kind_of(&it.entry.name, it.entry.size) == Some(PreviewKind::Image) { thumbs.get(ui, server, it) } else { None };
+                let p = ui.painter();
+                match thumb {
+                    Some(t) => {
+                        let area = vec2(CELL.x - 16.0, 72.0);
+                        let size = t.size_vec2();
+                        let scale = (area.x / size.x).min(area.y / size.y);
+                        let at = Rect::from_center_size(egui::pos2(r.center().x, r.top() + 44.0), size * scale);
+                        p.image(t.id(), at, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+                    }
+                    None => icons::paint(p, Rect::from_center_size(egui::pos2(r.center().x, r.top() + 44.0), vec2(56.0, 56.0)), it.emoji()),
+                }
                 let name_rect = Rect::from_min_max(egui::pos2(r.left() + 8.0, r.top() + 80.0), egui::pos2(r.right() - 8.0, r.bottom() - 6.0));
                 if !name_cell(ui, st, it, name_rect) {
                     // Nom sur deux lignes au plus, centré.
@@ -1311,7 +1574,7 @@ fn name_cell(ui: &mut egui::Ui, st: &mut Tab, it: &Item, r: Rect) -> bool {
     if *old != it.entry.name || !st.selected.contains(&it.key()) {
         return false;
     }
-    let id = egui::Id::unique("files_rename");
+    let id = egui::Id::unique(("files_rename", st.uid));
     let edit_rect = Rect::from_center_size(r.center(), vec2(r.width(), 24.0));
     let resp = ui
         .scope_builder(egui::UiBuilder::new().max_rect(edit_rect), |ui| {
@@ -1397,7 +1660,7 @@ fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &eg
         ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.5, theme::TEXT()), egui::StrokeKind::Inside);
         if let Some(items) = resp.dnd_release_payload::<DragItems>() {
             let root = if it.local() { LOCAL.to_string() } else { it.root.clone() };
-            todo.push(Do::Drop(items, root, it.path.clone(), ui.input(|i| i.modifiers.shift)));
+            todo.push(Do::Drop(items, root, it.path.clone(), ui.input(|i| i.modifiers)));
         }
     }
     if resp.secondary_clicked() && !st.selected.contains(&it.key()) {
@@ -1467,7 +1730,8 @@ fn keyboard(ui: &mut egui::Ui, st: &mut State, items: &[Item], todo: &mut Vec<Do
             todo.push(Do::SelectTab((st.active + 1) % st.tabs.len()));
         }
         if i.consume_key(egui::Modifiers::COMMAND, Key::F) {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::unique("files_search")));
+            let uid = st.tabs[st.active].uid;
+            ctx.memory_mut(|m| m.request_focus(egui::Id::unique(("files_search", uid))));
         }
     });
     // Pas de raccourcis pendant la saisie (recherche, renommage).
@@ -1542,7 +1806,8 @@ fn status_bar(ui: &mut egui::Ui, st: &State, server: &Server, items: &[Item], la
             let size: u64 = sel.iter().map(|i| i.entry.size).sum();
             text.push_str(&tf!("  ·  {} sélectionnés ({})", "  ·  {} selected ({})", sel.len(), bytes(size)));
         }
-        if let Some(c) = &st.clip {
+        let clip = server.data().files.clip.clone();
+        if let Some(c) = &clip {
             text.push_str(&if c.cut { tf!("  ·  {} à déplacer", "  ·  {} to move", c.items.len()) } else { tf!("  ·  {} à copier", "  ·  {} to copy", c.items.len()) });
         }
         ui.label(RichText::new(text).small().color(theme::TEXT_MUTED()));
@@ -1592,9 +1857,18 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
             st.toggle_float = true;
             return;
         }
+        Do::Detach(i, pos) => {
+            if st.tabs.len() > 1 && i < st.tabs.len() {
+                let tab = st.tabs.remove(i);
+                let next = if st.active > i || st.active == st.tabs.len() { st.active.saturating_sub(1) } else { st.active };
+                st.activate(next);
+                st.detached = Some((tab, pos - vec2(220.0, 24.0)));
+            }
+            return;
+        }
         _ => {}
     }
-    let State { tabs, active, clip, copy_text, .. } = st;
+    let State { tabs, active, copy_text, .. } = st;
     let tab = &mut tabs[*active];
     let selected: Vec<&Item> = items.iter().filter(|i| tab.selected.contains(&i.key())).collect();
     match d {
@@ -1617,7 +1891,16 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
                 }
             });
         }
-        Do::Drop(d, root, path, mv) => send(server, &d.root, &d.items, &root, &path, mv, true),
+        Do::Drop(d, root, path, mods) => {
+            // Sur le serveur : déplacé (Ctrl : copié) ; sur ce PC : copié (Maj : déplacé) ;
+            // de l'un à l'autre : téléchargé ou envoyé.
+            let mv = match (d.root == LOCAL, root == LOCAL) {
+                (false, false) => !mods.command,
+                (true, true) => mods.shift,
+                _ => false,
+            };
+            send(server, &d.root, &d.items, &root, &path, mv, true)
+        }
         Do::Reveal(it) => {
             let place = if it.local() { Place::Local { path: it.parent.clone() } } else { Place::Folder { root: it.root.clone(), path: it.parent.clone() } };
             navigate(tab, place);
@@ -1638,14 +1921,15 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
                 let c = Clip { cut, root: first.root.clone(), items: picked.map(|i| (i.path.clone(), i.entry.is_dir)).collect() };
                 let shown = |p: &String| if c.root == LOCAL { p.clone() } else { format!("{} › {p}", c.root) };
                 *copy_text = Some(c.items.iter().map(|(p, _)| shown(p)).collect::<Vec<_>>().join("\n"));
-                *clip = Some(c);
+                server.data().files.clip = Some(c);
             }
         }
         Do::Paste => {
-            if let (Some(c), Some((root, path))) = (clip.clone(), tab.dest()) {
+            let clip = server.data().files.clip.clone();
+            if let (Some(c), Some((root, path))) = (clip, tab.dest()) {
                 send(server, &c.root, &c.items, &root, &path, c.cut, false);
                 if c.cut {
-                    *clip = None;
+                    server.data().files.clip = None;
                 }
             }
         }
@@ -1698,7 +1982,7 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
             server.files_roots();
         }
         Do::NewFolder => new_folder(tab, server),
-        Do::NewTab(_) | Do::CloseTab(_) | Do::SelectTab(_) | Do::ToggleFloat => {}
+        Do::NewTab(_) | Do::CloseTab(_) | Do::SelectTab(_) | Do::ToggleFloat | Do::Detach(..) => {}
     }
 }
 
@@ -1754,7 +2038,9 @@ fn new_folder(tab: &mut Tab, server: &Server) {
     }
     let Some((root, path)) = tab.folder() else { return };
     let (root, path) = (root.to_string(), path.to_string());
-    let existing: Vec<String> = server.data().files.listing.as_ref().and_then(|l| l.as_ref().ok()).map(|l| l.entries.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
+    let key = (root.clone(), path.clone());
+    let existing: Vec<String> =
+        server.data().files.listings.get(&key).and_then(|l| l.as_ref().ok()).map(|l| l.entries.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
     let name = std::iter::once(base.to_string()).chain((2..).map(|i| format!("{base} ({i})"))).find(|n| !existing.contains(n)).unwrap_or_default();
     server.files_op(FileOp::Mkdir, &root, &join(&path, &name), None, None, tf!("{} créé", "{} created", name));
     tab.pending_rename = Some(name);
@@ -1815,12 +2101,49 @@ fn drag_ghost(ctx: &egui::Context) {
         }
         many => tf!("{} éléments", "{} items", many.len()),
     };
+    ghost(ctx, pos, &text);
+}
+
+/// Étiquette qui suit le pointeur pendant un glisser.
+fn ghost(ctx: &egui::Context, pos: egui::Pos2, text: &str) {
     let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("files_drag_ghost")));
-    let g = p.layout_no_wrap(text, FontId::proportional(13.0), theme::TEXT());
+    let g = p.layout_no_wrap(text.to_string(), FontId::proportional(13.0), theme::TEXT());
     let r = Rect::from_min_size(pos + vec2(16.0, 12.0), g.size() + vec2(20.0, 12.0));
     p.rect_filled(r, CornerRadius::same(6), theme::SURFACE_HI());
     p.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, theme::BORDER()), egui::StrokeKind::Inside);
     p.galley(r.min + vec2(10.0, 6.0), g, theme::TEXT());
+}
+
+/// Pointeur sorti de la fenêtre pendant un glisser : on passe la main au glisser-déposer de
+/// Windows. Les éléments du serveur sont téléchargés tout de suite dans un dossier temporaire ;
+/// l'Explorateur les copie à l'endroit du dépôt (en attendant la fin du téléchargement).
+#[cfg(windows)]
+fn drag_out(ctx: &egui::Context, st: &mut State, server: &Server) {
+    let Some(d) = egui::DragAndDrop::payload::<DragItems>(ctx) else { return };
+    let outside = ctx.input(|i| i.pointer.primary_down() && i.pointer.latest_pos().is_none_or(|p| !i.viewport_rect().contains(p)));
+    if !outside {
+        return;
+    }
+    egui::DragAndDrop::clear_payload(ctx);
+    ctx.stop_dragging();
+    let (paths, ids): (Vec<PathBuf>, Vec<u64>) = if d.root == LOCAL {
+        (d.items.iter().map(|(p, _)| PathBuf::from(p)).collect(), Vec::new())
+    } else {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|t| t.as_millis()).unwrap_or(0);
+        let dir = std::env::temp_dir().join("NAS").join(format!("glisser-{stamp}"));
+        let _ = std::fs::create_dir_all(&dir);
+        d.items.iter().map(|(p, is_dir)| server.download_to(&d.root, p, *is_dir, dir.clone(), false)).unzip()
+    };
+    st.outgoing = paths.clone();
+    let server = server.handle_pub();
+    crate::ole_drag::drag_out(paths, move || {
+        loop {
+            if let Some(ok) = server.transfers_done(&ids) {
+                return ok;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    });
 }
 
 // --- Transferts --------------------------------------------------------------------------

@@ -62,6 +62,18 @@ pub struct NasApp {
     /// Position et taille données à la fenêtre de l'explorateur à son ouverture (relues des
     /// réglages une fois, pour ne pas lutter contre l'utilisateur qui la déplace).
     float_rect: Option<[f32; 4]>,
+    /// Onglets de l'explorateur détachés, chacun dans sa fenêtre.
+    detached: Vec<Detached>,
+    next_detached: u64,
+}
+
+/// Fenêtre d'un onglet détaché.
+struct Detached {
+    id: u64,
+    files: tabs::files::State,
+    /// Coin haut gauche à l'ouverture (écran).
+    pos: egui::Pos2,
+    on_top: bool,
 }
 
 impl NasApp {
@@ -84,6 +96,54 @@ impl NasApp {
             files: Default::default(),
             logs: Default::default(),
             float_rect: None,
+            detached: Vec::new(),
+            next_detached: 0,
+        }
+    }
+
+    /// Onglet détaché : nouvelle fenêtre.
+    fn detach(&mut self, out: tabs::files::Out) {
+        if let Some((files, pos)) = out.detach {
+            self.next_detached += 1;
+            self.detached.push(Detached { id: self.next_detached, files, pos, on_top: false });
+        }
+    }
+
+    /// Fenêtres des onglets détachés ; fermer l'une ramène son onglet dans l'explorateur.
+    fn detached_windows(&mut self, ctx: &egui::Context, link: &crate::server::Link) {
+        let addr = self.prefs.agent_addr.clone();
+        let mut closed = Vec::new();
+        let mut new = Vec::new();
+        for (i, d) in self.detached.iter_mut().enumerate() {
+            let level = if d.on_top { egui::WindowLevel::AlwaysOnTop } else { egui::WindowLevel::Normal };
+            let title = format!("{} — NAS", d.files.title());
+            let builder = egui::ViewportBuilder::default()
+                .with_title(&title)
+                .with_position(d.pos)
+                .with_inner_size([1000.0, 660.0])
+                .with_min_inner_size([720.0, 480.0])
+                .with_decorations(false)
+                .with_window_level(level);
+            let (server, prefs) = (&self.server, &mut self.prefs);
+            ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("nas_files_tab", d.id)), builder, |ui, _class| {
+                let ctx = ui.ctx().clone();
+                let window = ui.max_rect();
+                let margin = Margin { left: 16, right: 16, top: (titlebar::HEIGHT + 6.0) as i8, bottom: 16 };
+                egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| {
+                    new.push(tabs::files::show(ui, &mut d.files, server, link, &addr, prefs, true));
+                });
+                titlebar::show_float(&ctx, window, &title, &mut d.on_top);
+                if ctx.input(|i| i.viewport().close_requested()) {
+                    closed.push(i);
+                }
+            });
+        }
+        for i in closed.into_iter().rev() {
+            let d = self.detached.remove(i);
+            self.files.adopt(d.files);
+        }
+        for out in new {
+            self.detach(out);
         }
     }
 
@@ -101,13 +161,16 @@ impl NasApp {
             .with_window_level(level);
         let addr = self.prefs.agent_addr.clone();
         let (files, server, prefs) = (&mut self.files, &self.server, &mut self.prefs);
+        let mut detach = None;
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("nas_files_window"), builder, |ui, _class| {
             let ctx = ui.ctx().clone();
             let window = ui.max_rect();
             let margin = Margin { left: 16, right: 16, top: (titlebar::HEIGHT + 6.0) as i8, bottom: 16 };
             let mut back = false;
             egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| {
-                back = tabs::files::show(ui, files, server, link, &addr, prefs, true);
+                let out = tabs::files::show(ui, files, server, link, &addr, prefs, true);
+                back = out.toggle_float;
+                detach = out.detach;
             });
             titlebar::show_float(&ctx, window, t!("Fichiers — NAS", "Files — NAS"), &mut prefs.files_on_top);
             // Position et taille retenues pour la prochaine fois.
@@ -121,6 +184,7 @@ impl NasApp {
                 prefs.files_floating = false;
             }
         });
+        self.detach(tabs::files::Out { toggle_float: false, detach });
     }
 }
 
@@ -143,7 +207,7 @@ impl eframe::App for NasApp {
         let margin = Margin { left: theme::CONTENT_LEFT_INSET, right: 32, top: 36, bottom: 32 };
         let mut open_logs = None;
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(theme::BG()).inner_margin(margin)).show(ui, |ui| match self.current {
-            Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr),
+            Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr, &self.server),
             Tab::Services => open_logs = tabs::services::show(ui, &mut self.services, &self.server, &link, &self.prefs.agent_addr),
             Tab::Sites => open_logs = tabs::sites::show(ui, &mut self.sites, &self.server, &link, &self.prefs.agent_addr),
             Tab::Logs => tabs::logs::show(ui, &mut self.logs, &self.server, &link, &self.prefs.agent_addr),
@@ -161,10 +225,12 @@ impl eframe::App for NasApp {
             }
             Tab::Files => {
                 let addr = self.prefs.agent_addr.clone();
-                if tabs::files::show(ui, &mut self.files, &self.server, &link, &addr, &mut self.prefs, false) {
+                let out = tabs::files::show(ui, &mut self.files, &self.server, &link, &addr, &mut self.prefs, false);
+                if out.toggle_float {
                     self.prefs.files_floating = true;
                     self.float_rect = None;
                 }
+                self.detach(out);
             }
             Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link, &self.server),
         });
@@ -181,6 +247,15 @@ impl eframe::App for NasApp {
         titlebar::show(ui.ctx(), window);
         if self.prefs.files_floating {
             self.files_window(ui.ctx(), &link);
+        }
+        self.detached_windows(ui.ctx(), &link);
+        // Onglets retrouvés au prochain lancement, y compris ceux des fenêtres détachées.
+        if self.files.restored() && !self.detached.is_empty() {
+            let mut places = self.files.places();
+            places.extend(self.detached.iter().flat_map(|d| d.files.places()));
+            if self.prefs.files_tabs != places {
+                self.prefs.files_tabs = places;
+            }
         }
 
         // Réglages modifiés : appliqués tout de suite, puis enregistrés.

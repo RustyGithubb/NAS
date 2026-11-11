@@ -10,6 +10,9 @@
 //! - `POST /api/sites/<nom>/<online|maintenance|offline|backup>` → [`ActionResult`]
 //! - `GET  /api/update` → [`UpdateStatus`]
 //! - `POST /api/update` → [`ActionResult`] (lance une recherche de mise à jour de l'agent)
+//! - `GET  /api/network` → [`Network`] (ajouté sans changer de version : un agent plus ancien
+//!   répond 404)
+//! - `POST /api/network/speedtest` → [`ActionResult`] (lance un test de débit internet)
 //! - `GET  /api/files/roots` → `Vec<`[`Root`]`>`
 //! - `GET  /api/files/list?root=&path=` → [`Listing`]
 //! - `GET  /api/files/search?q=` → [`SearchResult`]
@@ -346,6 +349,103 @@ pub fn valid_site_name(name: &str) -> bool {
 /// déguisée en nom, pas de caractère inattendu).
 pub fn valid_unit(name: &str) -> bool {
     (1..=128).contains(&name.len()) && !name.starts_with('-') && name.ends_with(".service") && name.chars().all(|c| c.is_ascii_alphanumeric() || "@._:-\\".contains(c))
+}
+
+/// Réseau du serveur (`GET /api/network`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Network {
+    /// Données simulées (agent hors du Mac mini).
+    #[serde(default)]
+    pub simulated: bool,
+    /// Interface utilisée pour sortir (celle de la route par défaut) : « wlp2s0 ».
+    pub iface: String,
+    /// Wi-Fi (sinon câble ou inconnu).
+    pub wireless: bool,
+    /// Adresse matérielle (MAC) de l'interface.
+    pub mac: String,
+    /// Adresse IPv4 avec son masque (« 192.168.1.169/24 »).
+    pub ipv4: String,
+    /// Passerelle : la box.
+    pub gateway: String,
+    pub dns: Vec<String>,
+    pub wifi: Option<Wifi>,
+    /// Débit reçu et envoyé pendant la dernière seconde (octets/s).
+    pub rx_bps: u64,
+    pub tx_bps: u64,
+    /// Total reçu et envoyé depuis le démarrage (octets).
+    pub rx_total: u64,
+    pub tx_total: u64,
+    /// Débits des 5 dernières minutes, une valeur par seconde : (reçu, envoyé).
+    pub history: Vec<(u64, u64)>,
+    /// Ping toutes les 10 s vers la box et vers internet (1.1.1.1), sur 5 minutes.
+    pub ping_gateway: Ping,
+    pub ping_internet: Ping,
+    /// Décrochages du Wi-Fi depuis le démarrage.
+    pub disconnects: u32,
+    /// Dernier décrochage : date (ms depuis 1970) et raison.
+    pub last_disconnect: Option<(i64, String)>,
+    /// Connecté depuis (ms depuis 1970).
+    pub connected_since_ms: Option<i64>,
+    pub speedtest: SpeedTest,
+}
+
+/// Connexion Wi-Fi en cours.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Wifi {
+    pub ssid: String,
+    /// Point d'accès (adresse matérielle).
+    pub bssid: String,
+    pub channel: u32,
+    pub freq_mhz: u32,
+    /// Vitesse de liaison annoncée (Mbit/s).
+    pub rate_mbps: u32,
+    /// Force du signal (0 à 100).
+    pub signal: u8,
+}
+
+impl Wifi {
+    /// « 2,4 GHz » ou « 5 GHz » (6 GHz au-delà).
+    pub fn band(&self) -> &'static str {
+        match self.freq_mhz {
+            0..4000 => "2,4 GHz",
+            4000..5900 => "5 GHz",
+            _ => "6 GHz",
+        }
+    }
+}
+
+/// Résultat des pings sur 5 minutes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Ping {
+    /// Dernier temps de réponse (ms) ; `None` s'il est resté sans réponse.
+    pub last_ms: Option<f32>,
+    /// Moyenne des réponses (ms).
+    pub avg_ms: Option<f32>,
+    /// Part des pings sans réponse (0 à 100).
+    pub loss_pct: f32,
+    /// Nombre de pings envoyés.
+    pub sent: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpeedState {
+    #[default]
+    Never,
+    Running,
+    Done,
+    Failed,
+}
+
+/// Test de débit internet (téléchargement d'un fichier de test).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SpeedTest {
+    pub state: SpeedState,
+    /// Débit mesuré (octets/s).
+    pub bytes_per_s: u64,
+    /// Date du test (ms depuis 1970).
+    pub at_ms: i64,
+    /// Erreur en cas d'échec.
+    pub message: String,
 }
 
 #[cfg(test)]
