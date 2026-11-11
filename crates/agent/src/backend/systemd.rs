@@ -22,6 +22,20 @@ fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// Services qui démarrent avec le système (`systemctl list-unit-files --state=enabled`).
+/// En cas d'erreur : liste vide (aucun service arrêté ne sera signalé, plutôt que tous).
+fn enabled_units() -> Vec<String> {
+    let out = run("systemctl", &["list-unit-files", "--type=service", "--state=enabled", "--no-legend", "--no-pager"]).unwrap_or_default();
+    out.lines().filter_map(|l| l.split_whitespace().next()).map(str::to_string).collect()
+}
+
+/// Un service est activé si son nom l'est, ou son modèle pour les instances (« getty@tty1.service »
+/// → « getty@.service »).
+fn is_enabled(enabled: &[String], unit: &str) -> bool {
+    let template = unit.split_once('@').map(|(base, rest)| format!("{base}@{}", &rest[rest.find('.').unwrap_or(rest.len())..]));
+    enabled.iter().any(|e| e == unit || Some(e) == template.as_ref())
+}
+
 impl super::Backend for Systemd {
     fn simulated(&self) -> bool {
         false
@@ -31,6 +45,7 @@ impl super::Backend for Systemd {
         let out = run("systemctl", &["list-units", "--type=service", "--all", "--output=json", "--no-pager"])?;
         let list: Vec<Value> = serde_json::from_str(&out).map_err(|e| e.to_string())?;
         let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+        let enabled = enabled_units();
         let mut services: Vec<Service> = list
             .iter()
             .filter(|v| s(v, "load") != "not-found")
@@ -44,6 +59,7 @@ impl super::Backend for Systemd {
                     _ => ServiceState::Inactive,
                 },
                 sub: s(v, "sub"),
+                enabled: is_enabled(&enabled, &s(v, "unit")),
             })
             .collect();
         services.sort_by(|a, b| a.name.cmp(&b.name));
@@ -99,5 +115,14 @@ mod tests {
         assert_eq!(message(Some(&v)), "hi");
         assert_eq!(message(Some(&Value::String("ok".into()))), "ok");
         assert_eq!(message(None), "");
+    }
+
+    #[test]
+    fn enabled_and_templates() {
+        let list = vec!["ssh.service".to_string(), "getty@.service".to_string()];
+        assert!(is_enabled(&list, "ssh.service"));
+        assert!(is_enabled(&list, "getty@tty1.service"));
+        assert!(!is_enabled(&list, "e2scrub_all.service"));
+        assert!(!is_enabled(&list, "user@1000.service"));
     }
 }

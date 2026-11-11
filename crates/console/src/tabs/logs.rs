@@ -48,9 +48,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
                 egui::ScrollArea::vertical().id_salt("logs_units").auto_shrink([false, false]).show(ui, |ui| {
                     let mut hl = Liquid::begin(ui, "logs_units");
                     for s in services.iter().filter(|s| q.is_empty() || s.name.to_lowercase().contains(&q)) {
-                        let state = s.state;
-                        let dot = move |p: &egui::Painter, c: egui::Pos2| paint_state(p, c, state);
-                        if widgets::nav_row(ui, &s.name, None, st.unit.as_deref() == Some(&s.name), super::service_tone(s.state), &mut hl, Some(&dot)).clicked() {
+                        let sv = s.clone();
+                        let dot = move |p: &egui::Painter, c: egui::Pos2| paint_state(p, c, &sv);
+                        if widgets::nav_row(ui, &s.name, None, st.unit.as_deref() == Some(&s.name), super::service_tone(s), &mut hl, Some(&dot)).clicked() {
                             st.unit = Some(s.name.clone());
                         }
                     }

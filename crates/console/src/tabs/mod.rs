@@ -13,11 +13,11 @@ use eframe::egui::{self, RichText, Stroke};
 use crate::server::Link;
 use crate::{theme, widgets};
 
-/// En-tête d'onglet : sur-titre, titre, et information à côté (accent si `accent`).
-pub fn header(ui: &mut egui::Ui, overline: &str, title: &str, badge: &str, accent: bool) {
+/// En-tête d'onglet : sur-titre, titre, et information à côté (en rouge si `alert`).
+pub fn header(ui: &mut egui::Ui, overline: &str, title: &str, badge: &str, alert: bool) {
     widgets::page_header_with(ui, overline, title, |ui| {
         if !badge.is_empty() {
-            widgets::header_badge(ui, badge, accent);
+            widgets::header_badge(ui, badge, alert);
         }
     });
 }
@@ -80,30 +80,35 @@ fn hint(ui: &mut egui::Ui, text: &str, cmd: &str) {
     });
 }
 
-/// Pastille d'état d'un service : pleine si actif, creuse si arrêté, accent si en échec.
-pub fn paint_state(p: &egui::Painter, c: egui::Pos2, state: nas_proto::ServiceState) {
+/// Pastille d'état d'un service : pleine si actif, creuse si arrêté, rouge si problème (en
+/// échec : pleine ; arrêté alors qu'il devrait tourner : creuse).
+pub fn paint_state(p: &egui::Painter, c: egui::Pos2, s: &nas_proto::Service) {
     use nas_proto::ServiceState as S;
-    match state {
+    match s.state {
         S::Active => p.circle_filled(c, 4.0, theme::TEXT()),
+        S::Inactive if s.enabled => p.circle_stroke(c, 3.5, Stroke::new(1.6, theme::DANGER())),
         S::Inactive => p.circle_stroke(c, 3.5, Stroke::new(1.2, theme::TEXT_MUTED())),
-        S::Failed => p.circle_filled(c, 4.0, theme::TODAY()),
+        S::Failed => p.circle_filled(c, 4.0, theme::DANGER()),
         S::Changing => p.circle_stroke(c, 3.5, Stroke::new(1.5, theme::TEXT())),
     };
 }
 
-/// Ton d'un service dans les listes : en échec → alerte, arrêté → éteint.
-pub fn service_tone(state: nas_proto::ServiceState) -> widgets::Tone {
-    match state {
-        nas_proto::ServiceState::Failed => widgets::Tone::Alert,
-        nas_proto::ServiceState::Inactive => widgets::Tone::Off,
-        _ => widgets::Tone::Normal,
+/// Ton d'un service dans les listes : problème → alerte (rouge), arrêté normalement (tâche
+/// ponctuelle terminée) → éteint.
+pub fn service_tone(s: &nas_proto::Service) -> widgets::Tone {
+    if s.problem() {
+        widgets::Tone::Alert
+    } else if s.state == nas_proto::ServiceState::Inactive {
+        widgets::Tone::Off
+    } else {
+        widgets::Tone::Normal
     }
 }
 
 /// Pastille d'état dans une mise en page.
-pub fn state_dot(ui: &mut egui::Ui, state: nas_proto::ServiceState) {
+pub fn state_dot(ui: &mut egui::Ui, s: &nas_proto::Service) {
     let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 18.0), egui::Sense::hover());
-    paint_state(ui.painter(), r.center(), state);
+    paint_state(ui.painter(), r.center(), s);
 }
 
 /// Ligne de détail : intitulé et aide à gauche, contrôle à droite (comme les Réglages).
@@ -125,12 +130,12 @@ pub fn separator(ui: &mut egui::Ui) {
     ui.add_space(4.0);
 }
 
-/// Résultat de la dernière action, en une ligne (✓ en gris, ✗ en accent) avec ✕ pour masquer.
+/// Résultat de la dernière action, en une ligne (✓ en gris, ✗ en rouge) avec ✕ pour masquer.
 /// Renvoie `true` si on a cliqué sur ✕.
 pub fn result_line(ui: &mut egui::Ui, ok: bool, text: &str) -> bool {
     let mut hide = false;
     ui.horizontal(|ui| {
-        let t = if ok { RichText::new(format!("✓ {text}")).color(theme::TEXT_MUTED()) } else { RichText::new(format!("✗ {text}")).color(theme::TODAY()) };
+        let t = if ok { RichText::new(format!("✓ {text}")).color(theme::TEXT_MUTED()) } else { RichText::new(format!("✗ {text}")).color(theme::DANGER()) };
         ui.add(egui::Label::new(t).truncate());
         hide = ui.small_button("✕").on_hover_text(t!("Masquer", "Hide")).clicked();
     });

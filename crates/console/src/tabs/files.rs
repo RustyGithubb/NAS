@@ -591,7 +591,7 @@ fn interact(ui: &mut egui::Ui, st: &mut State, items: &[Item], i: usize, resp: &
             ui.close();
         }
         ui.separator();
-        if ui.button(RichText::new(t!("Mettre à la corbeille (Suppr)", "Move to trash (Del)")).color(theme::TODAY())).clicked() {
+        if ui.button(RichText::new(t!("Mettre à la corbeille (Suppr)", "Move to trash (Del)")).color(theme::DANGER())).clicked() {
             todo.push(Do::Delete);
             ui.close();
         }
@@ -686,7 +686,7 @@ fn status_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, items: &[Item]
                 if ui.small_button("✕").clicked() {
                     server.data().files.last = None;
                 }
-                let t = if *ok { RichText::new(format!("✓ {msg}")).color(theme::TEXT_MUTED()) } else { RichText::new(format!("✗ {msg}")).color(theme::TODAY()) };
+                let t = if *ok { RichText::new(format!("✓ {msg}")).color(theme::TEXT_MUTED()) } else { RichText::new(format!("✗ {msg}")).color(theme::DANGER()) };
                 ui.add(egui::Label::new(t.small()).truncate());
             }
             if ui.small_button(t!("Ouvrir Téléchargements", "Open Downloads")).on_hover_text(crate::server::download_dir().display().to_string()).clicked() {

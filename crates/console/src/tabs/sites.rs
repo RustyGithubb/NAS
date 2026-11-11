@@ -31,7 +31,9 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
     if sites.simulated {
         badge.push_str(t!("  ·  simulé", "  ·  simulated"));
     }
-    header(ui, overline, title, &badge, false);
+    // Un site déclaré mais coupé ne s'affiche plus pour personne : en rouge.
+    let off = sites.list.iter().any(|s| s.state == SiteState::Offline);
+    header(ui, overline, title, &badge, off);
     if st.selected.as_ref().is_none_or(|n| !sites.list.iter().any(|s| &s.name == n)) {
         st.selected = sites.list.first().map(|s| s.name.clone());
     }
@@ -43,12 +45,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
             let mut hl = Liquid::begin(ui, "sites_list");
             for s in &sites.list {
                 let state = s.state;
-                let tone = if state == SiteState::Offline { widgets::Tone::Off } else { widgets::Tone::Normal };
+                // Hors ligne : plus personne ne voit le site, il ressort en rouge.
+                let tone = if state == SiteState::Offline { widgets::Tone::Alert } else { widgets::Tone::Normal };
                 let dot = move |p: &egui::Painter, c: egui::Pos2| {
                     match state {
                         SiteState::Online => p.circle_filled(c, 4.0, theme::TEXT()),
                         SiteState::Maintenance => p.circle_filled(c, 4.0, theme::TODAY()),
-                        SiteState::Offline => p.circle_stroke(c, 3.5, egui::Stroke::new(1.2, theme::TEXT_MUTED())),
+                        SiteState::Offline => p.circle_stroke(c, 3.5, egui::Stroke::new(1.6, theme::DANGER())),
                     };
                 };
                 if widgets::nav_row(ui, &s.name, None, st.selected.as_deref() == Some(&s.name), tone, &mut hl, Some(&dot)).clicked() {
@@ -136,7 +139,7 @@ fn site_card(ui: &mut egui::Ui, s: &Site, busy: bool) -> Option<CardAction> {
                 let days = (ms - chrono::Utc::now().timestamp_millis()) / 86_400_000;
                 let text = tf!("valide encore {} jours", "valid for {} more days", days);
                 // Caddy renouvelle seul vers 30 jours ; en dessous de 14, quelque chose bloque.
-                RichText::new(text).color(if days < 14 { theme::TODAY() } else { theme::TEXT_MUTED() })
+                RichText::new(text).color(if days < 14 { theme::DANGER() } else { theme::TEXT_MUTED() })
             }
             None => RichText::new(t!("pas encore obtenu (à la première mise en ligne)", "not obtained yet (on first going online)")).color(theme::TEXT_MUTED()),
         };

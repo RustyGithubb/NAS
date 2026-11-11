@@ -19,9 +19,9 @@ pub fn page_header_with(ui: &mut egui::Ui, overline: &str, title: &str, extra: i
     ui.add_space(18.0);
 }
 
-/// Information à côté du titre (accent pour ce qui demande de l'attention).
-pub fn header_badge(ui: &mut egui::Ui, text: &str, accent: bool) {
-    ui.label(RichText::new(text).size(14.0).color(if accent { theme::TODAY() } else { theme::TEXT_MUTED() }));
+/// Information à côté du titre (en rouge pour un problème).
+pub fn header_badge(ui: &mut egui::Ui, text: &str, alert: bool) {
+    ui.label(RichText::new(text).size(14.0).color(if alert { theme::DANGER() } else { theme::TEXT_MUTED() }));
 }
 
 /// Hauteur de la ligne de titre (alignement identique d'un onglet à l'autre).
@@ -92,7 +92,7 @@ pub fn side_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(4.0);
 }
 
-/// Ton d'un élément de liste : normal, en alerte (en échec : fond teinté d'accent) ou éteint
+/// Ton d'un élément de liste : normal, en alerte (problème : fond rouge) ou éteint
 /// (arrêté, coupé : fond plus sombre, texte estompé).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
@@ -106,7 +106,7 @@ impl Tone {
     pub fn fill(self, selected: bool) -> egui::Color32 {
         match self {
             Tone::Normal => theme::gray(if selected { 0x26 } else { 0x1C }),
-            Tone::Alert => theme::blend(theme::gray(0x1C), theme::TODAY(), if selected { 0.30 } else { 0.18 }),
+            Tone::Alert => theme::blend(theme::gray(0x1C), theme::DANGER(), if selected { 0.42 } else { 0.28 }),
             // Éteint : « creusé » dans le panneau (couleur du fond de la fenêtre), avec un contour.
             Tone::Off => {
                 if selected {
@@ -122,6 +122,7 @@ impl Tone {
     pub fn text(self, selected: bool) -> egui::Color32 {
         match self {
             Tone::Off if !selected => theme::TEXT_FAINT(),
+            Tone::Alert => theme::TEXT(),
             _ if selected => theme::TEXT(),
             _ => theme::TEXT_MUTED(),
         }
@@ -184,11 +185,11 @@ pub fn pane_title(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::
     ui.add_space(8.0);
 }
 
-/// Élément de liste (carte arrondie). Le sélectionné est surligné ; en alerte, fond teinté
-/// d'accent et liseré à gauche ; éteint, fond plus sombre. Renvoie la réponse au clic.
+/// Élément de liste (carte arrondie). Le sélectionné est surligné ; en alerte, fond rouge et
+/// liseré rouge à gauche ; éteint, fond plus sombre. Renvoie la réponse au clic.
 pub fn list_item(ui: &mut egui::Ui, selected: bool, tone: Tone, body: impl FnOnce(&mut egui::Ui)) -> egui::Response {
     let fill = tone.fill(selected);
-    let bar = (tone == Tone::Alert).then(theme::TODAY);
+    let bar = (tone == Tone::Alert).then(theme::DANGER);
     let stroke = if tone == Tone::Off { Stroke::new(1.0, theme::BORDER()) } else { Stroke::NONE };
     let out = egui::Frame::new().fill(fill).stroke(stroke).corner_radius(CornerRadius::same(8)).inner_margin(Margin { left: 22, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
         ui.set_width(ui.available_width());

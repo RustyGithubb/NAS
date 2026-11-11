@@ -7,8 +7,11 @@ use super::{header, unavailable};
 use crate::server::Link;
 use crate::{theme, widgets};
 
-/// Seuil au-delà duquel une jauge passe à la couleur d'accent (%).
-const HIGH: f32 = 85.0;
+/// Seuil au-delà duquel une jauge ou une tuile passe au rouge (%).
+const HIGH: f32 = 90.0;
+/// Température au-delà de laquelle la tuile passe au rouge (°C) : sans ventilateur, le Mac mini
+/// doit rester en dessous.
+const HOT_C: f32 = 85.0;
 
 pub fn show(ui: &mut egui::Ui, link: &Link, addr: &str) {
     let overline = t!("Tableau de bord", "Dashboard");
@@ -16,26 +19,38 @@ pub fn show(ui: &mut egui::Ui, link: &Link, addr: &str) {
         return;
     }
     let Link::Online(s) = link else { return };
-    let hot = s.cpu.usage >= HIGH || pct(s.memory.used, s.memory.total) >= HIGH;
-    header(ui, overline, &s.hostname, &s.os, hot);
+    let mem = pct(s.memory.used, s.memory.total);
+    let hot = s.temperature_c.is_some_and(|t| t >= HOT_C);
+    let disk_full = s.disks.iter().any(|d| pct(d.used, d.total) >= HIGH);
+    // En alerte, l'information à côté du nom dit pourquoi (sinon : le système).
+    let reasons: Vec<&str> = [
+        (s.cpu.usage >= HIGH, t!("Processeur saturé", "CPU saturated")),
+        (mem >= HIGH, t!("Mémoire saturée", "Memory saturated")),
+        (hot, t!("Trop chaud", "Too hot")),
+        (disk_full, t!("Disque presque plein", "Disk almost full")),
+    ]
+    .into_iter()
+    .filter_map(|(on, why)| on.then_some(why))
+    .collect();
+    let badge = if reasons.is_empty() { s.os.clone() } else { reasons.join("  ·  ") };
+    header(ui, overline, &s.hostname, &badge, !reasons.is_empty());
 
     // Une seule grille, un seul espacement : le même écart entre les tuiles, entre les tuiles et
     // les panneaux, et entre les panneaux (celui des colonnes de tous les onglets).
     let gap = ui.spacing().item_spacing.x;
     let full = ui.available_rect_before_wrap();
     let tile_w = (full.width() - 3.0 * gap) / 4.0;
-    let mem = pct(s.memory.used, s.memory.total);
     let temp = s.temperature_c.map(|t| format!("{t:.0} °C")).unwrap_or_else(|| "—".into());
     let temp_note = if s.temperature_c.is_some() { t!("la plus haute", "highest") } else { t!("non disponible", "not available") };
-    let tiles: [(&str, &str, String, String, Option<f32>); 4] = [
-        ("cpu", t!("Processeur", "CPU"), format!("{:.0} %", s.cpu.usage), tf!("{} cœurs", "{} cores", s.cpu.per_core.len()), Some(s.cpu.usage)),
-        ("mem", t!("Mémoire", "Memory"), format!("{mem:.0} %"), format!("{} / {}", bytes(s.memory.used), bytes(s.memory.total)), Some(mem)),
-        ("temp", t!("Température", "Temperature"), temp, temp_note.to_string(), None),
-        ("up", t!("En marche depuis", "Up for"), uptime(s.uptime_s), tf!("agent v{}", "agent v{}", s.agent_version), None),
+    let tiles: [Tile; 4] = [
+        ("cpu", t!("Processeur", "CPU"), format!("{:.0} %", s.cpu.usage), tf!("{} cœurs", "{} cores", s.cpu.per_core.len()), Some(s.cpu.usage), s.cpu.usage >= HIGH),
+        ("mem", t!("Mémoire", "Memory"), format!("{mem:.0} %"), format!("{} / {}", bytes(s.memory.used), bytes(s.memory.total)), Some(mem), mem >= HIGH),
+        ("temp", t!("Température", "Temperature"), temp, temp_note.to_string(), None, hot),
+        ("up", t!("En marche depuis", "Up for"), uptime(s.uptime_s), tf!("agent v{}", "agent v{}", s.agent_version), None, false),
     ];
-    for (i, (key, label, value, note, gauge)) in tiles.iter().enumerate() {
+    for (i, (key, label, value, note, gauge, alert)) in tiles.iter().enumerate() {
         let r = Rect::from_min_size(full.min + vec2(i as f32 * (tile_w + gap), 0.0), vec2(tile_w, TILE_H));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)), |ui| tile(ui, key, label, value, note, *gauge));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)), |ui| tile(ui, key, label, value, note, *gauge, *alert));
     }
 
     // Processeur sur toute la largeur, cœurs en grille ; stockage en dessous, jusqu'en bas.
@@ -110,21 +125,27 @@ fn in_rect(ui: &mut egui::Ui, r: Rect, body: impl FnOnce(&mut egui::Ui)) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)), body);
 }
 
+/// Tuile : clé d'animation, intitulé, valeur, note, jauge facultative, en alerte.
+type Tile<'a> = (&'a str, &'a str, String, String, Option<f32>, bool);
+
 /// Hauteur des tuiles.
 const TILE_H: f32 = 112.0;
 
-/// Tuile : intitulé discret, grande valeur, note, et jauge facultative (0 à 100).
-fn tile(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>) {
+/// Tuile : intitulé discret, grande valeur, note, et jauge facultative (0 à 100). En alerte
+/// (seuil dépassé) : fond et contour rouges, valeur en rouge.
+fn tile(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>, alert: bool) {
     let jolt = crate::widgets::shake_offset(ui.ctx(), ui.max_rect().left() * 0.011);
-    crate::widgets::shifted(ui, jolt, |ui| tile_inner(ui, key, label, value, note, gauge));
+    crate::widgets::shifted(ui, jolt, |ui| tile_inner(ui, key, label, value, note, gauge, alert));
 }
 
-fn tile_inner(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>) {
-    egui::Frame::new().fill(theme::SURFACE()).stroke(Stroke::new(1.0, theme::BORDER())).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(16)).show(ui, |ui| {
+fn tile_inner(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>, alert: bool) {
+    let (fill, border, value_color) =
+        if alert { (theme::blend(theme::SURFACE(), theme::DANGER(), 0.22), theme::DANGER(), theme::DANGER()) } else { (theme::SURFACE(), theme::BORDER(), theme::TEXT()) };
+    egui::Frame::new().fill(fill).stroke(Stroke::new(1.0, border)).corner_radius(CornerRadius::same(12)).inner_margin(Margin::same(16)).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         ui.spacing_mut().item_spacing.y = 2.0;
         ui.label(egui::RichText::new(label).small().color(theme::TEXT_MUTED()));
-        ui.label(egui::RichText::new(value).font(theme::title_font(26.0)).color(theme::TEXT()));
+        ui.label(egui::RichText::new(value).font(theme::title_font(26.0)).color(value_color));
         ui.label(egui::RichText::new(note).color(theme::TEXT_MUTED()));
         ui.add_space(8.0);
         // Hauteur identique pour toutes les tuiles, avec ou sans jauge.
@@ -154,7 +175,7 @@ fn bar(ui: &egui::Ui, key: impl std::hash::Hash + std::fmt::Debug, r: Rect, valu
     let p = ui.painter();
     let round = CornerRadius::same((r.height() / 2.0) as u8);
     p.rect_filled(r, round, theme::SURFACE_HI());
-    let fill = if v >= HIGH { theme::TODAY() } else { theme::TEXT() };
+    let fill = if v >= HIGH { theme::DANGER() } else { theme::TEXT() };
     let w = (r.width() * v / 100.0).max(if v > 0.0 { r.height() } else { 0.0 });
     p.rect_filled(Rect::from_min_size(r.min, vec2(w, r.height())), round, fill);
 }

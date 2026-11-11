@@ -29,7 +29,7 @@ impl Filter {
             Filter::All => t!("Tous les services", "All services"),
             Filter::Active => t!("Actifs", "Active"),
             Filter::Stopped => t!("Arrêtés", "Stopped"),
-            Filter::Failed => t!("En échec", "Failed"),
+            Filter::Failed => t!("Problèmes", "Problems"),
         }
     }
 
@@ -38,7 +38,7 @@ impl Filter {
             Filter::All => true,
             Filter::Active => matches!(s.state, ServiceState::Active | ServiceState::Changing),
             Filter::Stopped => s.state == ServiceState::Inactive,
-            Filter::Failed => s.state == ServiceState::Failed,
+            Filter::Failed => s.problem(),
         }
     }
 }
@@ -62,9 +62,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
         (d.services.clone(), d.pending.clone(), d.last_action.clone())
     };
     let services = services.unwrap_or_default();
-    let failed = services.list.iter().filter(|s| s.state == ServiceState::Failed).count();
+    let failed = services.list.iter().filter(|s| s.problem()).count();
     let active = services.list.iter().filter(|s| s.state == ServiceState::Active).count();
-    let mut badge = if failed > 0 { tf!("{failed} en échec", "{failed} failed") } else { tf!("{} actifs sur {}", "{} active out of {}", active, services.list.len()) };
+    let mut badge = if failed > 0 {
+        if failed == 1 { t!("1 problème", "1 problem").to_string() } else { tf!("{failed} problèmes", "{failed} problems") }
+    } else {
+        tf!("{} actifs sur {}", "{} active out of {}", active, services.list.len())
+    };
     if services.simulated {
         badge.push_str(t!("  ·  simulé", "  ·  simulated"));
     }
@@ -86,7 +90,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
             let mut hl = Liquid::begin(ui, "services_filters");
             for f in Filter::ALL {
                 let n = services.list.iter().filter(|s| f.keeps(s)).count();
-                // « En échec » ressort tant qu'il reste un service en échec.
+                // « Problèmes » ressort tant qu'il en reste un.
                 let tone = if f == Filter::Failed && n > 0 { widgets::Tone::Alert } else { widgets::Tone::Normal };
                 if widgets::nav_row(ui, f.label(), Some(n), st.filter == f, tone, &mut hl, None).clicked() {
                     st.filter = f;
@@ -104,13 +108,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
                 }
                 for s in &shown {
                     let sel = st.selected.as_deref() == Some(&s.name);
-                    let tone = super::service_tone(s.state);
+                    let tone = super::service_tone(s);
                     let resp = widgets::list_item(ui, sel, tone, |ui| {
                         ui.horizontal(|ui| {
-                            super::state_dot(ui, s.state);
+                            super::state_dot(ui, s);
                             ui.label(RichText::new(&s.name).color(tone.text(sel)));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.label(RichText::new(&s.sub).small().color(theme::TEXT_FAINT()));
+                                ui.label(RichText::new(&s.sub).small().color(if s.problem() { theme::DANGER() } else { theme::TEXT_FAINT() }));
                             });
                         });
                         ui.add(egui::Label::new(RichText::new(&s.description).font(theme::editor_font(12.5, false)).color(theme::TEXT_FAINT())).truncate());
@@ -167,14 +171,15 @@ fn detail(ui: &mut egui::Ui, s: &Service, busy: bool) -> Option<Detail> {
     ui.add_space(14.0);
     let state = match s.state {
         ServiceState::Active => t!("Actif", "Active"),
+        ServiceState::Inactive if s.enabled => t!("Arrêté (devrait tourner)", "Stopped (should be running)"),
         ServiceState::Inactive => t!("Arrêté", "Stopped"),
         ServiceState::Failed => t!("En échec", "Failed"),
         ServiceState::Changing => t!("En cours de changement", "Changing"),
     };
     row(ui, t!("État", "Status"), &tf!("Détail systemd : {}", "systemd detail: {}", s.sub), |ui| {
-        ui.label(RichText::new(state).color(if s.state == ServiceState::Failed { theme::TODAY() } else { theme::TEXT() }));
+        ui.label(RichText::new(state).color(if s.problem() { theme::DANGER() } else { theme::TEXT() }));
         let (r, _) = ui.allocate_exact_size(egui::vec2(12.0, 16.0), egui::Sense::hover());
-        paint_state(ui.painter(), r.center(), s.state);
+        paint_state(ui.painter(), r.center(), s);
     });
     separator(ui);
     // Actions sur leur propre ligne : la colonne peut être étroite.

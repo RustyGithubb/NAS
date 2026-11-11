@@ -162,6 +162,12 @@ pub fn LINK() -> Color32 {
 pub fn TODAY() -> Color32 {
     color(8)
 }
+/// Rouge des problèmes (en échec, arrêté à tort, seuil dépassé, erreur), le même dans tous
+/// les thèmes : un peu plus sombre sur fond clair pour rester lisible.
+#[allow(non_snake_case)]
+pub fn DANGER() -> Color32 {
+    rgb(if is_light() { 0xCD2B31 } else { 0xE5484D })
+}
 /// Fond de la barre latérale : légèrement translucide, elle flotte au-dessus du contenu.
 #[allow(non_snake_case)]
 pub fn SIDEBAR_BG() -> Color32 {

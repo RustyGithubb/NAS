@@ -41,7 +41,7 @@ impl Mock {
         for (name, desc, active, lines) in CATALOG {
             let state = if active { ServiceState::Active } else { ServiceState::Inactive };
             let sub = if active { "running" } else { "dead" };
-            let mut u = Unit { service: Service { name: name.into(), description: desc.into(), state, sub: sub.into() }, lines, log: Vec::new(), dropped: 0 };
+            let mut u = Unit { service: Service { name: name.into(), description: desc.into(), state, sub: sub.into(), enabled: active }, lines, log: Vec::new(), dropped: 0 };
             if active {
                 push(&mut u, now - 60_000, 6, format!("Started {desc}."));
             }

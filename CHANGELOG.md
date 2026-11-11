@@ -2,6 +2,7 @@
 
 ## Non publié
 ### Ajouts
+- Problèmes en rouge partout : services en échec ou arrêtés alors qu'ils démarrent avec le système (filtre « Problèmes »), tuiles et jauges du tableau de bord au-delà de 90 % (ou 85 °C), sites coupés, erreurs. Les tâches ponctuelles arrêtées restent grises. Protocole v6.
 - Tableau de bord : espace disque comme `df` sous Linux (utilisé sans la réserve de l'administrateur, et espace disponible). Protocole v5 : mettre à jour l'agent et la console ensemble.
 - Squelette du projet : console (Windows), agent (serveur) et données partagées.
 - Console : fenêtre sans cadre, barre latérale flottante (Tableau de bord, Services, Journaux, Fichiers, Réglages), 12 thèmes, français / anglais.

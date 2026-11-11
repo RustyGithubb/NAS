@@ -46,14 +46,14 @@ fn server(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Opt
         });
         ui.ctx().data_mut(|d| d.insert_temp(show_id, show));
         if let Some(e) = key_error {
-            ui.label(RichText::new(tf!("Clé non enregistrée dans le coffre du système : {e}", "Key not saved in the system vault: {e}")).color(theme::TODAY()));
+            ui.label(RichText::new(tf!("Clé non enregistrée dans le coffre du système : {e}", "Key not saved in the system vault: {e}")).color(theme::DANGER()));
         }
         separator(ui);
         let (dot, text) = match link {
             Link::Connecting => (theme::TEXT_MUTED(), t!("Connexion…", "Connecting…").to_string()),
             Link::Online(s) => (theme::TEXT(), tf!("Connecté à {}", "Connected to {}", s.hostname)),
-            Link::Offline(e) => (theme::TODAY(), tf!("Hors ligne : {e}", "Offline: {e}")),
-            Link::Denied => (theme::TODAY(), t!("Clé d'accès refusée", "Access key refused").to_string()),
+            Link::Offline(e) => (theme::DANGER(), tf!("Hors ligne : {e}", "Offline: {e}")),
+            Link::Denied => (theme::DANGER(), t!("Clé d'accès refusée", "Access key refused").to_string()),
         };
         row(ui, t!("État", "Status"), t!("Liaison avec l'agent", "Link with the agent"), |ui| {
             ui.label(RichText::new(text).color(theme::TEXT_MUTED()));

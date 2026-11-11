@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;
@@ -95,6 +95,16 @@ pub struct Service {
     pub state: ServiceState,
     /// Détail donné par systemd (« running », « exited », « dead »…).
     pub sub: String,
+    /// Démarre avec le système (« enabled ») : arrêté, c'est un problème. Les tâches ponctuelles
+    /// (sauvegarde du soir, vérification de disque…) ne le sont pas et s'arrêtent normalement.
+    pub enabled: bool,
+}
+
+impl Service {
+    /// En échec, ou arrêté alors qu'il devrait tourner.
+    pub fn problem(&self) -> bool {
+        self.state == ServiceState::Failed || (self.state == ServiceState::Inactive && self.enabled)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
