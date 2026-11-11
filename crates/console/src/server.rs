@@ -81,15 +81,178 @@ pub struct FilesData {
     /// Résultat de la dernière opération (réussie ?, message).
     pub last: Option<(bool, String)>,
     pub transfers: Vec<Transfer>,
+    /// Augmente à chaque fin de transfert ou de copie : les dossiers de ce PC affichés sont relus.
+    pub local_gen: u64,
+    /// Un transfert vers le serveur s'est terminé : le dossier affiché est redemandé.
+    pub changed: bool,
+    next_transfer: u64,
 }
 
-/// Envoi ou téléchargement.
+/// Sens d'un transfert.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    /// Du serveur vers ce PC.
+    Download,
+    /// De ce PC vers le serveur.
+    Upload,
+    /// D'un dossier de ce PC à un autre.
+    Local,
+}
+
+/// Envoi, téléchargement ou copie sur ce PC, avec sa progression (onglet Transferts).
 #[derive(Clone)]
 pub struct Transfer {
+    pub id: u64,
     pub name: String,
-    pub upload: bool,
+    pub kind: Kind,
     pub done: bool,
     pub error: Option<String>,
+    /// Octets transférés, et total (0 tant qu'il n'est pas connu).
+    pub bytes: u64,
+    pub total: u64,
+    pub started: Instant,
+    pub finished: Option<Instant>,
+    /// Sur ce PC : destination d'un téléchargement ou d'une copie, source d'un envoi.
+    pub local: std::path::PathBuf,
+    /// Sur le serveur : emplacement et chemin (élément téléchargé, ou dossier de destination d'un envoi).
+    pub remote: (String, String),
+}
+
+/// Met à jour la progression d'un transfert depuis son fil (au plus 10 fois par seconde).
+struct Tracker {
+    shared: Arc<Mutex<Shared>>,
+    ctx: egui::Context,
+    id: u64,
+    pending: u64,
+    last: Instant,
+}
+
+impl Tracker {
+    fn with(&self, f: impl FnOnce(&mut Transfer)) {
+        let mut s = lock(&self.shared);
+        if let Some(t) = s.files.transfers.iter_mut().find(|t| t.id == self.id) {
+            f(t);
+        }
+    }
+
+    fn total(&self, total: u64) {
+        self.with(|t| t.total = total);
+    }
+
+    fn add(&mut self, n: u64) {
+        self.pending += n;
+        if self.last.elapsed() >= Duration::from_millis(100) {
+            let p = std::mem::take(&mut self.pending);
+            self.with(|t| t.bytes += p);
+            self.last = Instant::now();
+            self.ctx.request_repaint();
+        }
+    }
+
+    fn finish(mut self, r: Result<(), String>) {
+        let p = std::mem::take(&mut self.pending);
+        self.with(|t| {
+            t.bytes += p;
+            if r.is_ok() && t.total > 0 {
+                t.bytes = t.total;
+            }
+            t.done = true;
+            t.finished = Some(Instant::now());
+            t.error = r.err();
+        });
+        let mut s = lock(&self.shared);
+        // Le contenu affiché a changé : dossier du serveur redemandé, dossiers du PC relus.
+        s.files.local_gen += 1;
+        s.files.changed = true;
+        drop(s);
+        self.ctx.request_repaint();
+    }
+}
+
+/// Lecture qui compte les octets envoyés (progression d'un envoi).
+struct Counting<'a, R> {
+    inner: R,
+    tracker: &'a mut Tracker,
+}
+
+impl<R: std::io::Read> std::io::Read for Counting<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.tracker.add(n as u64);
+        Ok(n)
+    }
+}
+
+/// Copie `from` vers `to` par morceaux en comptant les octets.
+fn copy_counted(from: &mut dyn std::io::Read, to: &mut dyn std::io::Write, tracker: &mut Tracker) -> Result<(), String> {
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = from.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(());
+        }
+        to.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+        tracker.add(n as u64);
+    }
+}
+
+/// Fichiers et dossiers d'un dossier de ce PC, récursivement : dossiers (chemins relatifs, dans
+/// l'ordre de création) et fichiers (chemin complet, chemin relatif, taille).
+type LocalTree = (Vec<String>, Vec<(std::path::PathBuf, String, u64)>);
+
+fn local_tree(root: &std::path::Path) -> LocalTree {
+    let (mut dirs, mut files) = (Vec::new(), Vec::new());
+    fn walk(dir: &std::path::Path, rel: &str, dirs: &mut Vec<String>, files: &mut Vec<(std::path::PathBuf, String, u64)>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let r = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            let Ok(md) = e.metadata() else { continue };
+            if md.is_dir() {
+                dirs.push(r.clone());
+                walk(&e.path(), &r, dirs, files);
+            } else if md.is_file() {
+                files.push((e.path(), r, md.len()));
+            }
+        }
+    }
+    walk(root, "", &mut dirs, &mut files);
+    (dirs, files)
+}
+
+/// Copie un fichier ou un dossier de ce PC (déplacement : renommage si possible).
+fn local_copy_item(src: &std::path::Path, dest: &std::path::Path, mv: bool, tracker: &mut Tracker) -> Result<(), String> {
+    if mv && std::fs::rename(src, dest).is_ok() {
+        return Ok(());
+    }
+    if src.is_dir() {
+        let (dirs, files) = local_tree(src);
+        std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+        for d in dirs {
+            std::fs::create_dir_all(dest.join(&d)).map_err(|e| e.to_string())?;
+        }
+        for (path, rel, _) in files {
+            let mut from = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let mut to = std::fs::File::create(dest.join(&rel)).map_err(|e| e.to_string())?;
+            copy_counted(&mut from, &mut to, tracker)?;
+        }
+        if mv {
+            std::fs::remove_dir_all(src).map_err(|e| e.to_string())?;
+        }
+    } else {
+        let mut from = std::fs::File::open(src).map_err(|e| e.to_string())?;
+        let mut to = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+        copy_counted(&mut from, &mut to, tracker)?;
+        if mv {
+            std::fs::remove_file(src).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Taille d'un fichier ou d'un dossier de ce PC.
+fn local_size(p: &std::path::Path) -> u64 {
+    if p.is_dir() { local_tree(p).1.iter().map(|f| f.2).sum() } else { p.metadata().map(|m| m.len()).unwrap_or(0) }
 }
 
 pub struct Server {
@@ -348,67 +511,153 @@ impl Server {
         );
     }
 
-    /// Télécharge un fichier dans « Téléchargements\NAS » ; `open` : l'ouvre ensuite.
-    pub fn download(&self, root: &str, path: &str, open: bool) {
-        let name = path.rsplit('/').next().unwrap_or(path).to_string();
-        self.data().files.transfers.push(Transfer { name: name.clone(), upload: false, done: false, error: None });
-        let url = format!("/api/files/download?root={}&path={}", urlencoding::encode(root), urlencoding::encode(path));
-        let n = name.clone();
-        self.spawn_files(
-            move |_, t, to| -> Result<std::path::PathBuf, String> {
-                let dir = download_dir();
-                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                let target = free_local_name(&dir, &n);
-                let resp = to.request(t, "GET", &url).call().map_err(describe)?;
-                let mut file = std::fs::File::create(&target).map_err(|e| e.to_string())?;
-                std::io::copy(&mut resp.into_reader(), &mut file).map_err(|e| e.to_string())?;
-                if open {
-                    open_local(&target);
-                }
-                Ok(target)
-            },
-            move |f, r| {
-                if let Some(tr) = f.transfers.iter_mut().rev().find(|t| t.name == name && !t.upload && !t.done) {
-                    tr.done = true;
-                    tr.error = r.as_ref().err().cloned();
-                }
-                f.last = Some(match r {
-                    Ok(p) => (true, tf!("{} téléchargé dans {}", "{} downloaded to {}", name, p.parent().map(|d| d.display().to_string()).unwrap_or_default())),
-                    Err(e) => (false, e),
-                });
-            },
-        );
+    /// Nouveau transfert affiché dans l'onglet Transferts, et son suivi.
+    fn track(&self, name: &str, kind: Kind, local: std::path::PathBuf, remote: (String, String)) -> Tracker {
+        let mut s = self.data();
+        s.files.next_transfer += 1;
+        let id = s.files.next_transfer;
+        s.files.transfers.push(Transfer { id, name: name.to_string(), kind, done: false, error: None, bytes: 0, total: 0, started: Instant::now(), finished: None, local, remote });
+        Tracker { shared: self.shared.clone(), ctx: self.ctx.clone(), id, pending: 0, last: Instant::now() }
     }
 
-    /// Envoie des fichiers de ce PC dans le dossier `dir` de l'emplacement `root`.
+    /// Ouvre un fichier du serveur : téléchargé dans un dossier temporaire, puis ouvert avec le
+    /// programme par défaut.
+    pub fn download(&self, root: &str, path: &str, open: bool) {
+        let dir = std::env::temp_dir().join("NAS");
+        let _ = std::fs::create_dir_all(&dir);
+        self.download_to(root, path, false, dir, open);
+    }
+
+    /// Télécharge un fichier ou un dossier (avec tout son contenu) du serveur dans `dest_dir`.
+    pub fn download_to(&self, root: &str, path: &str, is_dir: bool, dest_dir: std::path::PathBuf, open: bool) {
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        let target = free_local_name(&dest_dir, &name);
+        let mut tracker = self.track(&name, Kind::Download, target.clone(), (root.to_string(), path.to_string()));
+        let (agent, transfer, to, root, path) = (self.agent.clone(), self.transfer_agent.clone(), Target::of(&self.data()), root.to_string(), path.to_string());
+        std::thread::spawn(move || {
+            let get_file = |remote: &str, local: &std::path::Path, tracker: &mut Tracker| -> Result<(), String> {
+                let url = format!("/api/files/download?root={}&path={}", urlencoding::encode(&root), urlencoding::encode(remote));
+                let resp = to.request(&transfer, "GET", &url).call().map_err(describe)?;
+                let mut file = std::fs::File::create(local).map_err(|e| e.to_string())?;
+                copy_counted(&mut resp.into_reader(), &mut file, tracker)
+            };
+            let r = (|| -> Result<(), String> {
+                if !is_dir {
+                    let size = get::<Listing>(&agent, &to, &format!("/api/files/list?root={}&path={}", urlencoding::encode(&root), urlencoding::encode(&parent(&path))))
+                        .ok()
+                        .and_then(|l| l.entries.into_iter().find(|e| e.name == name).map(|e| e.size))
+                        .unwrap_or(0);
+                    tracker.total(size);
+                    return get_file(&path, &target, &mut tracker);
+                }
+                // Dossier : on parcourt d'abord tout le contenu (pour connaître la taille totale).
+                let (mut dirs, mut files) = (vec![String::new()], Vec::new());
+                let mut i = 0;
+                while i < dirs.len() {
+                    let rel = dirs[i].clone();
+                    let full = if rel.is_empty() { path.clone() } else { format!("{path}/{rel}") };
+                    let l = get::<Listing>(&agent, &to, &format!("/api/files/list?root={}&path={}", urlencoding::encode(&root), urlencoding::encode(&full)))?;
+                    for e in l.entries {
+                        let r = if rel.is_empty() { e.name.clone() } else { format!("{rel}/{}", e.name) };
+                        if e.is_dir { dirs.push(r) } else { files.push((r, e.size)) }
+                    }
+                    i += 1;
+                }
+                tracker.total(files.iter().map(|f| f.1).sum());
+                for d in &dirs {
+                    std::fs::create_dir_all(target.join(d)).map_err(|e| e.to_string())?;
+                }
+                for (rel, _) in files {
+                    get_file(&format!("{path}/{rel}"), &target.join(&rel), &mut tracker)?;
+                }
+                Ok(())
+            })();
+            if r.is_ok() && open {
+                open_local(&target);
+            }
+            tracker.finish(r);
+        });
+    }
+
+    /// Envoie des fichiers ou des dossiers (avec tout leur contenu) de ce PC dans le dossier
+    /// `dir` de l'emplacement `root`.
     pub fn upload(&self, root: &str, dir: &str, local: Vec<std::path::PathBuf>) {
-        for file in local.into_iter().filter(|p| p.is_file()) {
-            let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            self.data().files.transfers.push(Transfer { name: name.clone(), upload: true, done: false, error: None });
-            let remote = if dir.is_empty() { name.clone() } else { format!("{dir}/{name}") };
-            let url = format!("/api/files/upload?root={}&path={}", urlencoding::encode(root), urlencoding::encode(&remote));
-            let me = self.handle();
-            self.spawn_files(
-                move |_, t, to| -> Result<(), String> {
-                    let f = std::fs::File::open(&file).map_err(|e| e.to_string())?;
+        for src in local {
+            let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if name.is_empty() {
+                continue;
+            }
+            let mut tracker = self.track(&name, Kind::Upload, src.clone(), (root.to_string(), dir.to_string()));
+            let (agent, transfer, to, root, dir) = (self.agent.clone(), self.transfer_agent.clone(), Target::of(&self.data()), root.to_string(), dir.to_string());
+            std::thread::spawn(move || {
+                let join = |a: &str, b: &str| if a.is_empty() { b.to_string() } else { format!("{a}/{b}") };
+                let put = |file: &std::path::Path, remote: &str, tracker: &mut Tracker| -> Result<(), String> {
+                    let f = std::fs::File::open(file).map_err(|e| e.to_string())?;
                     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-                    let r = to.request(t, "POST", &url).set("Content-Length", &len.to_string()).send(f).map_err(describe)?;
+                    let url = format!("/api/files/upload?root={}&path={}", urlencoding::encode(&root), urlencoding::encode(remote));
+                    let r = to.request(&transfer, "POST", &url).set("Content-Length", &len.to_string()).send(Counting { inner: f, tracker }).map_err(describe)?;
                     let res: ActionResult = r.into_json().map_err(|e| e.to_string())?;
                     if res.ok { Ok(()) } else { Err(res.message) }
-                },
-                move |f, r| {
-                    if let Some(tr) = f.transfers.iter_mut().rev().find(|t| t.name == name && t.upload && !t.done) {
-                        tr.done = true;
-                        tr.error = r.as_ref().err().cloned();
+                };
+                // Dossier déjà présent sur le serveur : on le complète (pas une erreur).
+                let mkdir = |remote: &str| -> Result<(), String> {
+                    let url = format!("/api/files/mkdir?root={}&path={}", urlencoding::encode(&root), urlencoding::encode(remote));
+                    let res: ActionResult = to.request(&agent, "POST", &url).call().map_err(describe)?.into_json().map_err(|e| e.to_string())?;
+                    if res.ok || res.message.to_lowercase().contains("exist") { Ok(()) } else { Err(res.message) }
+                };
+                let r = (|| -> Result<(), String> {
+                    let base = join(&dir, &name);
+                    if src.is_dir() {
+                        let (dirs, files) = local_tree(&src);
+                        tracker.total(files.iter().map(|f| f.2).sum());
+                        mkdir(&base)?;
+                        for d in dirs {
+                            mkdir(&join(&base, &d))?;
+                        }
+                        for (path, rel, _) in files {
+                            put(&path, &join(&base, &rel), &mut tracker)?;
+                        }
+                        Ok(())
+                    } else {
+                        tracker.total(src.metadata().map(|m| m.len()).unwrap_or(0));
+                        put(&src, &base, &mut tracker)
                     }
-                    f.last = Some(match r {
-                        Ok(()) => (true, tf!("{} envoyé", "{} uploaded", name)),
-                        Err(e) => (false, e),
-                    });
-                    me.refresh_files(f);
-                },
-            );
+                })();
+                tracker.finish(r);
+            });
         }
+    }
+
+    /// Copie (ou déplace) des fichiers et dossiers de ce PC dans `dest_dir`.
+    pub fn local_copy(&self, srcs: Vec<std::path::PathBuf>, dest_dir: std::path::PathBuf, mv: bool) {
+        for src in srcs {
+            let name = src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            // Déplacé dans son propre dossier : rien à faire (copié : « nom (2) »).
+            if name.is_empty() || mv && src.parent() == Some(dest_dir.as_path()) {
+                continue;
+            }
+            let dest = free_local_name(&dest_dir, &name);
+            let mut tracker = self.track(&name, Kind::Local, dest.clone(), Default::default());
+            std::thread::spawn(move || {
+                tracker.total(local_size(&src));
+                let r = if dest.starts_with(&src) {
+                    Err(t!("impossible de copier un dossier dans lui-même", "cannot copy a folder into itself").to_string())
+                } else {
+                    local_copy_item(&src, &dest, mv, &mut tracker)
+                };
+                tracker.finish(r);
+            });
+        }
+    }
+
+    /// Retire de l'onglet Transferts ceux qui sont terminés.
+    pub fn clear_transfers(&self) {
+        self.data().files.transfers.retain(|t| !t.done);
+    }
+
+    /// Un transfert vers le serveur s'est terminé depuis la dernière fois ?
+    pub fn take_changed(&self) -> bool {
+        std::mem::take(&mut self.data().files.changed)
     }
 
     /// Copie pour lancer des demandes depuis un autre fil (fenêtre « Ouvrir » de Windows).
@@ -489,13 +738,17 @@ impl Server {
     }
 }
 
-/// Dossier des téléchargements : « Téléchargements\NAS ».
+/// Dossier Téléchargements de ce PC.
 pub fn download_dir() -> std::path::PathBuf {
-    directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.to_path_buf())).unwrap_or_else(std::env::temp_dir).join("NAS")
+    directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.to_path_buf())).unwrap_or_else(std::env::temp_dir)
+}
+
+fn parent(path: &str) -> String {
+    path.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default()
 }
 
 /// Nom libre dans `dir` : « photo.jpg », sinon « photo (2).jpg »…
-fn free_local_name(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+pub fn free_local_name(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let first = dir.join(name);
     if !first.exists() {
         return first;
@@ -515,6 +768,14 @@ pub fn open_local(path: &std::path::Path) {
     let _ = std::process::Command::new("open").arg(path).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+}
+
+/// Ouvre le dossier d'un fichier de ce PC, le fichier sélectionné.
+pub fn reveal_local(path: &std::path::Path) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
+    #[cfg(not(windows))]
+    open_local(path.parent().unwrap_or(path));
 }
 
 fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {

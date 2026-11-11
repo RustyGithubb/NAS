@@ -30,6 +30,11 @@ pub struct Prefs {
     pub files_active: usize,
     /// Onglet Fichiers : volet Détails affiché.
     pub files_details: bool,
+    /// Explorateur détaché dans sa propre fenêtre, gardée au premier plan ou non.
+    pub files_floating: bool,
+    pub files_on_top: bool,
+    /// Position et taille de la fenêtre de l'explorateur (x, y, largeur, hauteur).
+    pub files_window: Option<[f32; 4]>,
 }
 
 /// Ce qu'affiche un onglet de l'explorateur.
@@ -41,6 +46,10 @@ pub enum Place {
     Gallery,
     /// Un dossier : emplacement et chemin dans cet emplacement.
     Folder { root: String, path: String },
+    /// Un dossier de ce PC (chemin complet ; vide = « Ce PC » : dossiers personnels et disques).
+    Local { path: String },
+    /// Envois et téléchargements en cours ou terminés.
+    Transfers,
 }
 
 /// Dossier favori de l'onglet Fichiers.
@@ -63,6 +72,9 @@ impl Default for Prefs {
             files_tabs: vec![Place::Home],
             files_active: 0,
             files_details: true,
+            files_floating: false,
+            files_on_top: false,
+            files_window: None,
         }
     }
 }

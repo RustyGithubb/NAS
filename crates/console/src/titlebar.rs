@@ -21,12 +21,40 @@ enum Button {
 }
 
 pub fn show(ctx: &egui::Context, window: Rect) {
+    show_inner(ctx, window, None);
+}
+
+/// Barre de titre d'une fenêtre volante : titre à gauche et bouton « toujours au premier plan »
+/// (épingle) avant réduire / agrandir / fermer.
+pub fn show_float(ctx: &egui::Context, window: Rect, title: &str, on_top: &mut bool) {
+    show_inner(ctx, window, Some((title, on_top)));
+}
+
+fn show_inner(ctx: &egui::Context, window: Rect, mut float: Option<(&str, &mut bool)>) {
     let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
     egui::Area::new(egui::Id::unique("wt_titlebar")).order(egui::Order::Foreground).fixed_pos(window.min).show(ctx, |ui| {
         let bar = Rect::from_min_size(window.min, vec2(window.width(), HEIGHT));
+        let extra = if float.is_some() { BUTTON_W } else { 0.0 };
         let buttons = Rect::from_min_max(Pos2::new(bar.right() - 3.0 * BUTTON_W, bar.top()), bar.max);
         // Déplacement : toute la bande sauf les boutons.
-        let drag = Rect::from_min_max(bar.min, Pos2::new(buttons.left(), bar.bottom()));
+        let drag = Rect::from_min_max(bar.min, Pos2::new(buttons.left() - extra, bar.bottom()));
+        if let Some((title, on_top)) = float.as_mut() {
+            ui.painter().text(Pos2::new(bar.left() + 14.0, bar.center().y), egui::Align2::LEFT_CENTER, *title, egui::FontId::proportional(12.5), theme::TEXT_MUTED());
+            // Épingle : garde la fenêtre au-dessus des autres (allumée quand c'est le cas).
+            let r = Rect::from_min_size(Pos2::new(buttons.left() - BUTTON_W, bar.top()), vec2(BUTTON_W, HEIGHT));
+            let tip = if **on_top { t!("Ne plus garder au premier plan", "Stop keeping on top") } else { t!("Toujours au premier plan", "Always on top") };
+            let resp = ui.interact(r, egui::Id::unique("wt_titlebar_pin"), Sense::click()).on_hover_text(tip);
+            let p = ui.painter();
+            if **on_top {
+                p.rect_filled(r, CornerRadius::ZERO, theme::overlay(16));
+            } else if resp.hovered() {
+                p.rect_filled(r, CornerRadius::ZERO, theme::overlay(22));
+            }
+            pin_icon(p, r.center(), if **on_top { theme::TEXT() } else { theme::TEXT_MUTED() }, **on_top);
+            if resp.clicked() {
+                **on_top = !**on_top;
+            }
+        }
         let resp = ui.interact(drag, egui::Id::unique("wt_titlebar_drag"), Sense::click_and_drag());
         if resp.double_clicked() {
             ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
@@ -107,4 +135,17 @@ pub fn show(ctx: &egui::Context, window: Rect) {
             }
         }
     });
+}
+
+/// Punaise dessinée : tête, aiguille ; pleine quand l'option est active.
+fn pin_icon(p: &egui::Painter, c: Pos2, color: Color32, on: bool) {
+    let s = Stroke::new(1.2, color);
+    let head = Rect::from_center_size(c + vec2(0.0, -3.0), vec2(8.0, 6.0));
+    if on {
+        p.rect_filled(head, CornerRadius::same(1), color);
+    } else {
+        p.rect_stroke(head, CornerRadius::same(1), s, egui::StrokeKind::Middle);
+    }
+    p.line_segment([c + vec2(-6.0, 0.5), c + vec2(6.0, 0.5)], s);
+    p.line_segment([c + vec2(0.0, 0.5), c + vec2(0.0, 7.0)], s);
 }

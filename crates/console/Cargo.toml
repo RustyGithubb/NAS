@@ -12,6 +12,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Heure locale des lignes de journal.
 chrono = "0.4.45"
 directories = "6.0.0"
+# Suppression des fichiers de ce PC : vers la Corbeille de Windows, pas définitivement.
+trash = "5"
 eframe = { version = "0.37.0", features = ["glow"] }
 # Clé d'accès de l'agent rangée dans le coffre de mots de passe du système (comme WorkTable).
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
@@ -24,5 +26,5 @@ urlencoding = "2.1.3"
 [target.'cfg(windows)'.dependencies]
 # Langue de Windows (choix « Langue du système »).
 windows-sys = { version = "0.59", features = ["Win32_Globalization"] }
-# Fenêtre « Ouvrir » de Windows (envoi de fichiers vers le serveur).
+# Fenêtres « Ouvrir » et « Choisir un dossier » de Windows (envoi, téléchargement).
 rfd = "0.15"

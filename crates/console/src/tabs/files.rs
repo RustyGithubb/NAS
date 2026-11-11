@@ -2,13 +2,17 @@
 //! (onglets, barre d'adresse, barre de commandes, volet de navigation, Accueil, Galerie, volet
 //! Détails, liste ou galerie, tri, sélection multiple, copier/couper/coller, renommer,
 //! corbeille, favoris épinglés, envoi par glisser-déposer, téléchargement) avec la recherche
-//! instantanée d'Everything (index tenu par l'agent).
+//! instantanée d'Everything (index tenu par l'agent). « Ce PC » montre aussi les dossiers et les
+//! disques de cet ordinateur ; glisser des éléments d'un dossier à un autre (autre onglet, volet
+//! de gauche) les télécharge, les envoie ou les copie (Maj : déplace). Onglet Transferts :
+//! progression des envois et des téléchargements.
 //!
 //! Raccourcis : Entrée ouvrir · Retour arrière dossier parent · Alt+←/→ précédent/suivant ·
 //! F2 renommer · Suppr corbeille · Ctrl+A tout · Ctrl+C/X/V · F5 actualiser · Ctrl+F rechercher ·
 //! Ctrl+T nouvel onglet · Ctrl+W fermer l'onglet · Ctrl+Tab onglet suivant.
 
 use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, CornerRadius, FontId, Key, Rect, RichText, Sense, Stroke, vec2};
@@ -18,7 +22,7 @@ use super::{header, unavailable};
 use crate::icons::{self, Emoji};
 use crate::liquid::Liquid;
 use crate::prefs::{Favorite, Place, Prefs};
-use crate::server::{Link, Server};
+use crate::server::{Kind, Link, Server, Transfer};
 use crate::tabs::dashboard::bytes;
 use crate::{theme, widgets};
 
@@ -32,6 +36,10 @@ const DETAILS_W: f32 = 280.0;
 /// Hauteur de la barre d'onglets, de la barre d'adresse et de la barre de commandes.
 const CHROME_H: f32 = 132.0;
 /// Page Galerie : toutes les images et vidéos (recherche dans l'index de l'agent).
+/// Emplacement des éléments de ce PC (leur chemin est alors le chemin complet sur ce PC).
+const LOCAL: &str = "\u{1}pc";
+/// Survol d'un onglet pendant un glisser : il passe au premier plan.
+const HOVER_SWITCH: Duration = Duration::from_millis(600);
 const GALLERY_Q: &str = "ext:jpg;jpeg;png;gif;webp;bmp;heic;tif;tiff;psd;mp4;mov;mkv;webm;avi";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -48,7 +56,14 @@ enum Sort {
 struct Clip {
     cut: bool,
     root: String,
-    paths: Vec<String>,
+    /// Chemin, et dossier ou non.
+    items: Vec<(String, bool)>,
+}
+
+/// Éléments en cours de glisser-déposer.
+struct DragItems {
+    root: String,
+    items: Vec<(String, bool)>,
 }
 
 /// Un onglet d'explorateur.
@@ -72,6 +87,8 @@ struct Tab {
     commit: bool,
     /// Contenu de `place` déjà demandé à l'agent.
     requested: bool,
+    /// Dossier de ce PC lu : chemin, génération (voir `FilesData::local_gen`), contenu.
+    local: Option<(String, u64, Result<Vec<Item>, String>)>,
 }
 
 impl Tab {
@@ -94,12 +111,25 @@ impl Tab {
             pending_rename: None,
             commit: false,
             requested: false,
+            local: None,
         }
     }
 
     fn folder(&self) -> Option<(&str, &str)> {
         match &self.place {
             Place::Folder { root, path } => Some((root, path)),
+            _ => None,
+        }
+    }
+
+    /// Dossier où coller ou déposer : (emplacement, chemin), `LOCAL` pour ce PC.
+    fn dest(&self) -> Option<(String, String)> {
+        if self.searching() {
+            return None;
+        }
+        match &self.place {
+            Place::Folder { root, path } => Some((root.clone(), path.clone())),
+            Place::Local { path } if !path.is_empty() => Some((LOCAL.to_string(), path.clone())),
             _ => None,
         }
     }
@@ -121,7 +151,25 @@ fn place_title(p: &Place) -> String {
         Place::Home => t!("Accueil", "Home").into(),
         Place::Gallery => t!("Galerie", "Gallery").into(),
         Place::Folder { root, path } => path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(root).to_string(),
+        Place::Local { path } if path.is_empty() => t!("Ce PC", "This PC").into(),
+        Place::Local { path } => local_name(path),
+        Place::Transfers => t!("Transferts", "Transfers").into(),
     }
+}
+
+/// Dernier élément d'un chemin de ce PC (« C: » pour un disque).
+fn local_name(path: &str) -> String {
+    match Path::new(path).file_name() {
+        Some(n) => n.to_string_lossy().into_owned(),
+        None => {
+            let s = path.trim_end_matches(['\\', '/']);
+            if s.is_empty() { path.to_string() } else { s.to_string() }
+        }
+    }
+}
+
+fn local_parent(path: &str) -> String {
+    Path::new(path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 fn place_emoji(p: &Place) -> Emoji {
@@ -130,7 +178,20 @@ fn place_emoji(p: &Place) -> Emoji {
         Place::Gallery => Emoji::Image,
         Place::Folder { root, path } if path.is_empty() => icons::for_root(root),
         Place::Folder { .. } => Emoji::Folder,
+        Place::Local { path } if path.is_empty() => Emoji::Computer,
+        Place::Local { path } if Path::new(path).parent().is_none() => Emoji::Disc,
+        Place::Local { .. } => Emoji::Folder,
+        Place::Transfers => Emoji::Archive,
     }
+}
+
+/// Lieu d'un favori (dossier du serveur ou de ce PC).
+fn fav_place(f: &Favorite) -> Place {
+    if f.root == LOCAL { Place::Local { path: f.path.clone() } } else { Place::Folder { root: f.root.clone(), path: f.path.clone() } }
+}
+
+fn fav_label(f: &Favorite) -> String {
+    if f.root == LOCAL { local_name(&f.path) } else { f.path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&f.root).to_string() }
 }
 
 /// État de l'onglet Fichiers (gardé d'une visite à l'autre).
@@ -143,11 +204,27 @@ pub struct State {
     roots_asked: bool,
     /// Onglets repris des réglages au premier affichage.
     restored: bool,
+    /// Affiché dans la fenêtre volante (sinon dans la console).
+    floating: bool,
+    /// Bouton « Détacher » / « Ramener » cliqué.
+    toggle_float: bool,
+    /// Onglet survolé pendant un glisser, et depuis quand.
+    hover_tab: Option<(usize, Instant)>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        State { tabs: vec![Tab::new(Place::Home)], active: 0, clip: None, copy_text: None, roots_asked: false, restored: false }
+        State {
+            tabs: vec![Tab::new(Place::Home)],
+            active: 0,
+            clip: None,
+            copy_text: None,
+            roots_asked: false,
+            restored: false,
+            floating: false,
+            toggle_float: false,
+            hover_tab: None,
+        }
     }
 }
 
@@ -180,6 +257,100 @@ impl Item {
     fn key(&self) -> (String, String) {
         (self.root.clone(), self.path.clone())
     }
+
+    fn local(&self) -> bool {
+        self.root == LOCAL
+    }
+
+    /// Dossier personnel ou disque de « Ce PC » : ni renommé, ni supprimé, ni déplacé.
+    fn fixed(&self) -> bool {
+        self.local() && self.parent.is_empty()
+    }
+
+    fn emoji(&self) -> Emoji {
+        if self.fixed() && Path::new(&self.path).parent().is_none() { Emoji::Disc } else { icons::kind(&self.entry.name, self.entry.is_dir).0 }
+    }
+
+    /// Dossier qui le contient, pour l'affichage.
+    fn location(&self) -> String {
+        if self.local() {
+            return if self.parent.is_empty() { t!("Ce PC", "This PC").into() } else { self.parent.clone() };
+        }
+        [self.root.as_str()].into_iter().chain(self.parent.split('/').filter(|p| !p.is_empty())).collect::<Vec<_>>().join(" › ")
+    }
+
+    /// Lieu de ce dossier.
+    fn place(&self) -> Place {
+        if self.local() { Place::Local { path: self.path.clone() } } else { Place::Folder { root: self.root.clone(), path: self.path.clone() } }
+    }
+}
+
+/// Contenu d'un dossier de ce PC (vide = « Ce PC »), sans les fichiers cachés.
+fn read_local(path: &str) -> Result<Vec<Item>, String> {
+    if path.is_empty() {
+        return Ok(this_pc());
+    }
+    let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+    Ok(rd
+        .flatten()
+        .filter_map(|e| {
+            let md = e.metadata().ok()?;
+            let name = e.file_name().to_string_lossy().into_owned();
+            if hidden(&name, &md) {
+                return None;
+            }
+            let modified_ms = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+            let entry = Entry { name, is_dir: md.is_dir(), size: if md.is_dir() { 0 } else { md.len() }, modified_ms };
+            Some(Item { root: LOCAL.into(), path: e.path().to_string_lossy().into_owned(), parent: path.to_string(), entry })
+        })
+        .collect())
+}
+
+#[cfg(windows)]
+fn hidden(_: &str, md: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // Attributs « caché » (2) et « système » (4) de Windows.
+    md.file_attributes() & 0x6 != 0
+}
+
+#[cfg(not(windows))]
+fn hidden(name: &str, _: &std::fs::Metadata) -> bool {
+    name.starts_with('.')
+}
+
+/// « Ce PC » : dossiers personnels, puis disques.
+fn this_pc() -> Vec<Item> {
+    let dir = |name: &str, p: &Path| Item {
+        root: LOCAL.into(),
+        path: p.to_string_lossy().into_owned(),
+        parent: String::new(),
+        entry: Entry { name: name.to_string(), is_dir: true, size: 0, modified_ms: 0 },
+    };
+    let mut v = Vec::new();
+    if let Some(u) = directories::UserDirs::new() {
+        for (n, p) in [
+            (t!("Bureau", "Desktop"), u.desktop_dir()),
+            (t!("Documents", "Documents"), u.document_dir()),
+            (t!("Téléchargements", "Downloads"), u.download_dir()),
+            (t!("Images", "Pictures"), u.picture_dir()),
+            (t!("Vidéos", "Videos"), u.video_dir()),
+            (t!("Musique", "Music"), u.audio_dir()),
+        ] {
+            if let Some(p) = p.filter(|p| p.is_dir()) {
+                v.push(dir(n, p));
+            }
+        }
+    }
+    #[cfg(windows)]
+    for c in b'C'..=b'Z' {
+        let root = format!("{}:\\", c as char);
+        if Path::new(&root).exists() {
+            v.push(dir(&format!("{}:", c as char), Path::new(&root)));
+        }
+    }
+    #[cfg(not(windows))]
+    v.push(dir("/", Path::new("/")));
+    v
 }
 
 fn join(dir: &str, name: &str) -> String {
@@ -194,7 +365,9 @@ fn parent_of(path: &str) -> String {
 enum Do {
     Open(Item),
     Go(Place),
-    Download(Item),
+    Download(Vec<Item>),
+    /// Éléments déposés dans un dossier (emplacement, chemin) ; `true` : déplacer.
+    Drop(std::sync::Arc<DragItems>, String, String, bool),
     Rename(Item),
     Copy(bool),
     Paste,
@@ -209,12 +382,16 @@ enum Do {
     Forward,
     Refresh,
     NewFolder,
+    ToggleFloat,
 }
 
-pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, addr: &str, prefs: &mut Prefs) {
+/// `floating` : dans la fenêtre volante (pas d'en-tête de page). Renvoie `true` si l'utilisateur
+/// demande de détacher l'explorateur (ou de le ramener dans la console).
+pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, addr: &str, prefs: &mut Prefs, floating: bool) -> bool {
+    st.floating = floating;
     let (overline, title) = (t!("Stockage", "Storage"), t!("Fichiers", "Files"));
     if unavailable(ui, overline, title, link, addr) {
-        return;
+        return false;
     }
     if !st.roots_asked {
         st.roots_asked = true;
@@ -227,11 +404,16 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
         }
         st.activate(prefs.files_active);
     }
-    let (roots, listing, loading, search, recent, last, transfers) = {
+    let (roots, listing, loading, search, recent, last, transfers, local_gen) = {
         let d = server.data();
         let f = &d.files;
-        (f.roots.clone().unwrap_or_default(), f.listing.clone(), f.loading, f.search.clone(), f.recent.clone(), f.last.clone(), f.transfers.clone())
+        (f.roots.clone().unwrap_or_default(), f.listing.clone(), f.loading, f.search.clone(), f.recent.clone(), f.last.clone(), f.transfers.clone(), f.local_gen)
     };
+    // Envoi terminé : le dossier affiché (et l'espace libre) sont redemandés.
+    if server.take_changed() && matches!(st.tab().place, Place::Folder { .. }) {
+        st.tab().requested = false;
+        server.files_roots();
+    }
 
     // Contenu de l'onglet au premier plan, demandé une fois.
     let tab = st.tab();
@@ -241,11 +423,22 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
             Place::Home => server.files_recent(),
             Place::Gallery => server.files_search(GALLERY_Q),
             Place::Folder { root, path } => server.files_list(root, path),
+            Place::Local { .. } => tab.local = None,
+            Place::Transfers => {}
         }
     }
-    // Recherche instantanée : lancée peu après la dernière frappe.
+    // Dossier de ce PC : relu à l'arrivée, à l'actualisation et après une copie.
+    if let Place::Local { path } = &tab.place
+        && tab.local.as_ref().is_none_or(|(p, g, _)| p != path || *g != local_gen)
+    {
+        tab.local = Some((path.clone(), local_gen, read_local(path)));
+    }
+    // Recherche instantanée : lancée peu après la dernière frappe (sur ce PC : filtre du dossier).
     let searching = tab.searching();
-    if searching && tab.query != tab.sent_query && tab.query_edited.is_none_or(|t| t.elapsed() >= SEARCH_DEBOUNCE) {
+    let remote = !matches!(tab.place, Place::Local { .. } | Place::Transfers);
+    if searching && !remote {
+        tab.sent_query = tab.query.clone();
+    } else if searching && tab.query != tab.sent_query && tab.query_edited.is_none_or(|t| t.elapsed() >= SEARCH_DEBOUNCE) {
         server.files_search(tab.query.trim());
         tab.sent_query = tab.query.clone();
     } else if searching && tab.query != tab.sent_query {
@@ -253,7 +446,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
     }
 
     let mut items = items_of(tab, &listing, &search, &recent);
-    if !(tab.place == Place::Home && !searching) {
+    let unsorted = tab.place == Place::Home || tab.place == (Place::Local { path: String::new() });
+    if !(unsorted && !searching) {
         sort_items(&mut items, tab.sort, tab.desc);
     }
     if let Some(name) = tab.pending_rename.clone()
@@ -269,19 +463,21 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
         Some(r) if r.total > 0 => tf!("{} libres sur {}", "{} free of {}", bytes(r.free), bytes(r.total)),
         _ => String::new(),
     };
-    header(ui, overline, title, &badge, false);
+    if !floating {
+        header(ui, overline, title, &badge, false);
+    }
 
     let mut todo: Vec<Do> = Vec::new();
     keyboard(ui, st, &items, &mut todo);
 
     // Fichiers glissés depuis Windows : envoyés dans le dossier affiché.
     let tab = &st.tabs[st.active];
-    let drop_target = if tab.searching() { None } else { tab.folder().map(|(r, p)| (r.to_string(), p.to_string())) };
-    let dropped: Vec<std::path::PathBuf> = ui.ctx().input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
+    let drop_target = tab.dest();
+    let dropped: Vec<PathBuf> = ui.ctx().input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
     if !dropped.is_empty()
         && let Some((r, p)) = &drop_target
     {
-        server.upload(r, p, dropped);
+        if r == LOCAL { server.local_copy(dropped, PathBuf::from(p), false) } else { server.upload(r, p, dropped) }
     }
     let hovering_files = ui.ctx().input(|i| !i.raw.hovered_files.is_empty());
 
@@ -298,11 +494,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
         widths.push((ui.available_width() - widgets::SIDE_W - DETAILS_W - 2.0 * gap).max(200.0));
     }
     widgets::pane_columns(ui, &widths, |i, ui| match i {
-        0 => side(ui, st, prefs, &roots, &mut todo),
+        0 => side(ui, st, prefs, &roots, transfers.iter().filter(|t| !t.done).count(), &mut todo),
         1 => {
             let content = ui.max_rect();
-            main_view(ui, st, prefs, &roots, &items, &listing, &search, loading, &mut todo);
-            status_bar(ui, st, server, &items, &last, &transfers);
+            main_view(ui, st, server, prefs, &roots, &items, &listing, &search, loading, &transfers, &mut todo);
+            status_bar(ui, st, server, &items, &last, &transfers, &mut todo);
             if hovering_files && let Some((r, p)) = &drop_target {
                 let p_ = ui.painter();
                 p_.rect_filled(content.expand(8.0), CornerRadius::same(10), theme::overlay(30));
@@ -310,7 +506,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
                 p_.text(
                     content.center(),
                     Align2::CENTER_CENTER,
-                    tf!("Déposer pour envoyer dans « {} »", "Drop to upload into “{}”", if p.is_empty() { r } else { p }),
+                    tf!(
+                        "Déposer pour copier dans « {} »",
+                        "Drop to copy into “{}”",
+                        if r == LOCAL {
+                            local_name(p)
+                        } else if p.is_empty() {
+                            r.clone()
+                        } else {
+                            p.clone()
+                        }
+                    ),
                     FontId::proportional(18.0),
                     theme::TEXT(),
                 );
@@ -319,6 +525,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
         _ => details(ui, &st.tabs[st.active], &items, &roots),
     });
 
+    drag_ghost(ui.ctx());
     for d in todo {
         run(d, st, server, prefs, &items);
     }
@@ -332,6 +539,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
         prefs.files_tabs = places;
     }
     prefs.files_active = st.active;
+    std::mem::take(&mut st.toggle_float)
 }
 
 /// Éléments de l'onglet : résultats de recherche (limités au dossier affiché), contenu du
@@ -347,6 +555,14 @@ fn items_of(
         Some((k, Ok(r))) if k == q => r.hits.iter().map(hit).collect(),
         _ => Vec::new(),
     };
+    let local = || match &tab.local {
+        Some((_, _, Ok(v))) => v.clone(),
+        _ => Vec::new(),
+    };
+    if tab.searching() && matches!(tab.place, Place::Local { .. }) {
+        let q = tab.query.trim().to_lowercase();
+        return local().into_iter().filter(|i| i.entry.name.to_lowercase().contains(&q)).collect();
+    }
     if tab.searching() {
         let all: Vec<Item> = search_for(tab.sent_query.trim());
         return match tab.folder() {
@@ -367,6 +583,8 @@ fn items_of(
             }
             _ => Vec::new(),
         },
+        Place::Local { .. } => local(),
+        Place::Transfers => Vec::new(),
     }
 }
 
@@ -382,7 +600,9 @@ fn chrome(ui: &mut egui::Ui, st: &mut State, server: &Server, prefs: &mut Prefs,
 }
 
 /// Onglets façon Explorateur Windows : icône, titre, ×, puis « + ».
-fn tab_bar(ui: &mut egui::Ui, st: &State, todo: &mut Vec<Do>) {
+fn tab_bar(ui: &mut egui::Ui, st: &mut State, todo: &mut Vec<Do>) {
+    let dragging = egui::DragAndDrop::has_payload_of_type::<DragItems>(ui.ctx());
+    let mut hovered_tab = None;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         let n = st.tabs.len();
@@ -418,6 +638,22 @@ fn tab_bar(ui: &mut egui::Ui, st: &State, todo: &mut Vec<Do>) {
             if resp.middle_clicked() && n > 1 {
                 todo.push(Do::CloseTab(i));
             }
+            // Glisser : déposé sur l'onglet = dans son dossier ; survolé un instant = au premier plan.
+            if dragging && resp.contains_pointer() {
+                hovered_tab = Some(i);
+                if t.dest().is_some() {
+                    ui.painter().rect_stroke(r, CornerRadius::same(8), Stroke::new(1.5, theme::TEXT_MUTED()), egui::StrokeKind::Inside);
+                }
+                if i != st.active && st.hover_tab.is_some_and(|(h, since)| h == i && since.elapsed() >= HOVER_SWITCH) {
+                    todo.push(Do::SelectTab(i));
+                }
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            }
+            if let Some(items) = resp.dnd_release_payload::<DragItems>()
+                && let Some((root, path)) = t.dest()
+            {
+                todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers.shift)));
+            }
         }
         if ui
             .add(egui::Button::new(RichText::new("+").size(16.0)).frame(false).min_size(vec2(28.0, 28.0)))
@@ -426,7 +662,19 @@ fn tab_bar(ui: &mut egui::Ui, st: &State, todo: &mut Vec<Do>) {
         {
             todo.push(Do::NewTab(Place::Home));
         }
+        // À droite : détacher l'explorateur dans sa fenêtre, ou l'y ramener.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let tip = if st.floating { t!("Ramener dans la console", "Bring back into the console") } else { t!("Détacher dans une fenêtre", "Detach into a window") };
+            if ui.add(egui::Button::new(RichText::new("⧉").size(16.0)).frame(false).min_size(vec2(30.0, 28.0))).on_hover_text(tip).clicked() {
+                todo.push(Do::ToggleFloat);
+            }
+        });
     });
+    st.hover_tab = match (hovered_tab, st.hover_tab) {
+        (Some(i), Some((h, since))) if h == i => Some((h, since)),
+        (Some(i), _) => Some((i, Instant::now())),
+        (None, _) => None,
+    };
 }
 
 /// ← → ↑ ⟳, chemin cliquable dans un champ, recherche à droite.
@@ -445,7 +693,8 @@ fn address_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, roots: &[nas_
         }
         let up = match &tab.place {
             Place::Folder { root, path } if !path.is_empty() => Some(Place::Folder { root: root.clone(), path: parent_of(path) }),
-            Place::Folder { .. } | Place::Gallery => Some(Place::Home),
+            Place::Local { path } if !path.is_empty() => Some(Place::Local { path: local_parent(path) }),
+            Place::Folder { .. } | Place::Gallery | Place::Local { .. } | Place::Transfers => Some(Place::Home),
             Place::Home => None,
         };
         if nav(ui, up.is_some(), "↑", t!("Dossier parent (Retour arrière)", "Parent folder (Backspace)"))
@@ -498,12 +747,30 @@ fn address_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, roots: &[nas_
                         }
                     }
                 }
+                Place::Local { path } => {
+                    sep(ui);
+                    if crumb(ui, t!("Ce PC", "This PC")) {
+                        todo.push(Do::Go(Place::Local { path: String::new() }));
+                    }
+                    let levels: Vec<&Path> = Path::new(path).ancestors().filter(|a| !a.as_os_str().is_empty()).collect();
+                    for a in levels.into_iter().rev() {
+                        let a = a.to_string_lossy().into_owned();
+                        sep(ui);
+                        if crumb(ui, &local_name(&a)) {
+                            todo.push(Do::Go(Place::Local { path: a }));
+                        }
+                    }
+                }
+                Place::Transfers => {
+                    sep(ui);
+                    crumb(ui, t!("Transferts", "Transfers"));
+                }
             }
         });
 
         // Recherche : dans le dossier affiché, ou partout depuis l'Accueil et la Galerie.
         let scope = match &tab.place {
-            Place::Folder { .. } => tf!("Rechercher dans : {}", "Search in: {}", place_title(&tab.place)),
+            Place::Folder { .. } | Place::Local { .. } => tf!("Rechercher dans : {}", "Search in: {}", place_title(&tab.place)),
             _ => t!("Rechercher partout", "Search everywhere").to_string(),
         };
         let resp = ui
@@ -521,7 +788,7 @@ fn address_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, roots: &[nas_
 fn command_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, prefs: &mut Prefs, todo: &mut Vec<Do>) {
     let has_clip = st.clip.is_some();
     let tab = st.tab();
-    let in_folder = tab.folder().is_some() && !tab.searching();
+    let in_folder = tab.dest().is_some();
     let n_sel = tab.selected.len();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -533,7 +800,7 @@ fn command_bar(ui: &mut egui::Ui, st: &mut State, server: &Server, prefs: &mut P
                     ui.close();
                 }
                 #[cfg(windows)]
-                if ui.button(t!("⬆  Envoyer des fichiers…", "⬆  Upload files…")).clicked() {
+                if tab.folder().is_some() && ui.button(t!("⬆  Envoyer des fichiers…", "⬆  Upload files…")).clicked() {
                     if let Some((root, dir)) = tab.folder() {
                         let (server, root, dir) = (server.handle_pub(), root.to_string(), dir.to_string());
                         std::thread::spawn(move || {
@@ -617,7 +884,7 @@ fn sep_v(ui: &mut egui::Ui) {
 // --- Volet de navigation ----------------------------------------------------------------
 
 /// Accueil, Galerie | favoris épinglés | emplacements du serveur.
-fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root], todo: &mut Vec<Do>) {
+fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root], running: usize, todo: &mut Vec<Do>) {
     let tab = &st.tabs[st.active];
     let here = if tab.searching() { None } else { Some(&tab.place) };
     let mut hl = Liquid::begin(ui, "files_nav");
@@ -629,10 +896,10 @@ fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root],
         ui.add_space(4.0);
     }
     for (i, f) in prefs.favorites.iter().enumerate() {
-        let label = f.path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&f.root).to_string();
-        let place = Place::Folder { root: f.root.clone(), path: f.path.clone() };
+        let place = fav_place(f);
         let e = if f.path.is_empty() { icons::for_root(&f.root) } else { Emoji::Folder };
-        let r = nav_place(ui, &mut hl, here, todo, &label, place.clone(), e, true).on_hover_text(format!("{} › {}", f.root, f.path));
+        let tip = if f.root == LOCAL { f.path.clone() } else { format!("{} › {}", f.root, f.path) };
+        let r = nav_place(ui, &mut hl, here, todo, &fav_label(f), place.clone(), e, true).on_hover_text(tip);
         r.context_menu(|ui| {
             if ui.button(t!("Ouvrir dans un nouvel onglet", "Open in new tab")).clicked() {
                 todo.push(Do::NewTab(place.clone()));
@@ -659,6 +926,14 @@ fn side(ui: &mut egui::Ui, st: &State, prefs: &Prefs, roots: &[nas_proto::Root],
             }
         });
     }
+    nav_sep(ui);
+    nav_place(ui, &mut hl, here, todo, t!("Ce PC", "This PC"), Place::Local { path: String::new() }, Emoji::Computer, false);
+    // Transferts : nombre en cours à droite.
+    let lead = |p: &egui::Painter, c: egui::Pos2| icons::paint(p, Rect::from_center_size(c, vec2(18.0, 18.0)), Emoji::Archive);
+    let r = widgets::nav_row(ui, t!("Transferts", "Transfers"), (running > 0).then_some(running), here == Some(&Place::Transfers), widgets::Tone::Normal, &mut hl, Some(&lead));
+    if r.clicked() {
+        todo.push(Do::Go(Place::Transfers));
+    }
     widgets::nav_end(ui, hl);
 }
 
@@ -675,7 +950,21 @@ fn nav_place(ui: &mut egui::Ui, hl: &mut Liquid, here: Option<&Place>, todo: &mu
         todo.push(Do::Go(place.clone()));
     }
     if r.middle_clicked() {
-        todo.push(Do::NewTab(place));
+        todo.push(Do::NewTab(place.clone()));
+    }
+    // Dossier du volet de gauche : on peut y déposer des éléments glissés.
+    let dest = match &place {
+        Place::Folder { root, path } => Some((root.clone(), path.clone())),
+        Place::Local { path } if !path.is_empty() => Some((LOCAL.to_string(), path.clone())),
+        _ => None,
+    };
+    if let Some((root, path)) = dest {
+        if r.dnd_hover_payload::<DragItems>().is_some() {
+            ui.painter().rect_stroke(r.rect, CornerRadius::same(8), Stroke::new(1.5, theme::TEXT_MUTED()), egui::StrokeKind::Inside);
+        }
+        if let Some(items) = r.dnd_release_payload::<DragItems>() {
+            todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers.shift)));
+        }
     }
     r
 }
@@ -693,15 +982,18 @@ fn nav_sep(ui: &mut egui::Ui) {
 fn main_view(
     ui: &mut egui::Ui,
     st: &mut State,
+    server: &Server,
     prefs: &Prefs,
     roots: &[nas_proto::Root],
     items: &[Item],
     listing: &Option<Result<nas_proto::Listing, String>>,
     search: &Option<(String, Result<nas_proto::SearchResult, String>)>,
     loading: bool,
+    transfers: &[Transfer],
     todo: &mut Vec<Do>,
 ) {
-    let h = (ui.available_height() - STATUS_H).max(40.0);
+    // Contenu + barre d'état = hauteur du panneau, au pixel près (même bas que les autres panneaux).
+    let h = (ui.available_height() - STATUS_H - ui.spacing().item_spacing.y).max(40.0);
     let tab = st.tab();
     let searching = tab.searching();
     ui.allocate_ui(vec2(ui.available_width(), h), |ui| {
@@ -710,9 +1002,25 @@ fn main_view(
             home(ui, tab, prefs, roots, items, todo);
             return;
         }
+        if tab.place == Place::Transfers {
+            transfers_page(ui, server, transfers, todo);
+            return;
+        }
+        let view = ui.max_rect();
         let gallery_page = !searching && tab.place == Place::Gallery;
+        let is_local = matches!(tab.place, Place::Local { .. });
         let waiting = |q: &str| !matches!(search, Some((k, _)) if k == q);
-        if searching {
+        let error = match (&tab.place, &tab.local) {
+            (Place::Local { .. }, Some((_, _, Err(e)))) => Some(e.clone()),
+            (Place::Folder { .. }, _) => listing.as_ref().and_then(|l| l.as_ref().err().cloned()),
+            _ => None,
+        };
+        if searching && is_local {
+            if items.is_empty() {
+                ui.add_space(40.0);
+                widgets::empty_state(ui, t!("Aucun résultat", "No result"), t!("Aucun nom de ce dossier ne contient ce texte", "No name in this folder contains this text"));
+            }
+        } else if searching {
             if waiting(tab.sent_query.trim()) || tab.query != tab.sent_query {
                 ui.vertical_centered(|ui| ui.spinner());
             } else if items.is_empty() {
@@ -730,23 +1038,34 @@ fn main_view(
                     t!("Elles apparaîtront ici dès qu'il y en aura sur le serveur", "They will show up here as soon as the server has some"),
                 );
             }
-        } else if loading && items.is_empty() {
+        } else if loading && !is_local && items.is_empty() {
             ui.vertical_centered(|ui| ui.spinner());
-        } else if let Some(Err(e)) = listing {
+        } else if let Some(e) = &error {
             ui.add_space(40.0);
             widgets::empty_state(ui, t!("Dossier inaccessible", "Folder unavailable"), e);
         } else if items.is_empty() {
             ui.add_space(40.0);
-            widgets::empty_state(
-                ui,
-                t!("Dossier vide", "Empty folder"),
-                t!("Glisse des fichiers ici pour les envoyer sur le serveur", "Drop files here to upload them to the server"),
-            );
+            let hint = if is_local {
+                t!("Glisse des fichiers ici pour les copier dans ce dossier", "Drop files here to copy them into this folder")
+            } else {
+                t!("Glisse des fichiers ici pour les envoyer sur le serveur", "Drop files here to upload them to the server")
+            };
+            widgets::empty_state(ui, t!("Dossier vide", "Empty folder"), hint);
         }
         if !items.is_empty() {
             // Galerie : toujours en grandes icônes, avec le dossier de chaque élément.
             let wide = searching || gallery_page;
             if prefs.files_gallery || gallery_page { gallery(ui, tab, items, wide, todo) } else { list(ui, tab, items, wide, todo) }
+        }
+        // Déposé ailleurs que sur un dossier : dans le dossier affiché.
+        if let Some((root, path)) = tab.dest() {
+            let r = ui.interact(view, egui::Id::unique("files_view_drop"), Sense::hover());
+            if r.dnd_hover_payload::<DragItems>().is_some() {
+                ui.painter().rect_stroke(view, CornerRadius::same(8), Stroke::new(1.5, theme::TEXT_FAINT()), egui::StrokeKind::Inside);
+            }
+            if let Some(items) = r.dnd_release_payload::<DragItems>() {
+                todo.push(Do::Drop(items, root, path, ui.input(|i| i.modifiers.shift)));
+            }
         }
     });
 }
@@ -759,9 +1078,9 @@ fn home(ui: &mut egui::Ui, tab: &mut Tab, prefs: &Prefs, roots: &[nas_proto::Roo
             .favorites
             .iter()
             .map(|f| {
-                let name = f.path.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&f.root).to_string();
                 let e = if f.path.is_empty() { icons::for_root(&f.root) } else { Emoji::Folder };
-                (name, format!("📌 {}", f.root), Place::Folder { root: f.root.clone(), path: f.path.clone() }, e)
+                let sub = if f.root == LOCAL { t!("📌 Ce PC", "📌 This PC").to_string() } else { format!("📌 {}", f.root) };
+                (fav_label(f), sub, fav_place(f), e)
             })
             .collect();
         for r in roots {
@@ -831,21 +1150,23 @@ fn details(ui: &mut egui::Ui, tab: &Tab, items: &[Item], roots: &[nas_proto::Roo
     };
     match sel.as_slice() {
         [one] => {
-            let (e, kind) = icons::kind(&one.entry.name, one.entry.is_dir);
-            big(ui, e);
+            let kind = icons::kind(&one.entry.name, one.entry.is_dir).1;
+            big(ui, one.emoji());
             title(ui, &one.entry.name);
             field(ui, t!("Type", "Type"), kind);
             if !one.entry.is_dir {
                 field(ui, t!("Taille", "Size"), &bytes(one.entry.size));
             }
             field(ui, t!("Modifié le", "Modified"), &date(one.entry.modified_ms));
-            let loc = [one.root.as_str()].into_iter().chain(one.parent.split('/').filter(|p| !p.is_empty())).collect::<Vec<_>>().join(" › ");
-            field(ui, t!("Emplacement", "Location"), &loc);
+            field(ui, t!("Emplacement", "Location"), &one.location());
         }
         [] => {
             big(ui, place_emoji(&tab.place));
             title(ui, &tab.title());
             let n = items.len();
+            if tab.place == Place::Transfers {
+                return;
+            }
             field(ui, t!("Contenu", "Contents"), &if n == 1 { t!("1 élément", "1 item").to_string() } else { tf!("{} éléments", "{} items", n) });
             if let Some((r, _)) = tab.folder()
                 && let Some(info) = roots.iter().find(|x| x.name == r)
@@ -901,7 +1222,7 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
         ui.spacing_mut().item_spacing.y = 0.0;
         for i in range {
             let it = &items[i];
-            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
             let sel = st.selected.contains(&it.key());
             let p = ui.painter();
             if sel {
@@ -909,8 +1230,8 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
             } else if resp.hovered() {
                 p.rect_filled(r, CornerRadius::same(6), theme::overlay(6));
             }
-            let (emoji, kind) = icons::kind(&it.entry.name, it.entry.is_dir);
-            icons::paint(p, Rect::from_center_size(egui::pos2(r.left() + 18.0, r.center().y), vec2(18.0, 18.0)), emoji);
+            let kind = icons::kind(&it.entry.name, it.entry.is_dir).1;
+            icons::paint(p, Rect::from_center_size(egui::pos2(r.left() + 18.0, r.center().y), vec2(18.0, 18.0)), it.emoji());
             let name_right = if date_w > 0.0 {
                 cols[1].2
             } else if kind_w > 0.0 {
@@ -931,8 +1252,7 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
             if date_w > 0.0 {
                 p.text(egui::pos2(cols[1].2, r.center().y), Align2::LEFT_CENTER, date(it.entry.modified_ms), small.clone(), theme::TEXT_MUTED());
             }
-            let third =
-                if searching { [it.root.as_str()].into_iter().chain(it.parent.split('/').filter(|p| !p.is_empty())).collect::<Vec<_>>().join(" › ") } else { kind.to_string() };
+            let third = if searching { it.location() } else { kind.to_string() };
             if kind_w > 0.0 {
                 let mut job = egui::text::LayoutJob::simple_singleline(third, small.clone(), theme::TEXT_MUTED());
                 job.wrap = egui::text::TextWrapping::truncate_at_width(kind_w - 12.0);
@@ -942,7 +1262,7 @@ fn list(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, todo: 
             if !it.entry.is_dir {
                 p.text(egui::pos2(r.right() - 8.0, r.center().y), Align2::RIGHT_CENTER, bytes(it.entry.size), small, theme::TEXT_MUTED());
             }
-            interact(ui, st, items, i, &resp, searching, todo);
+            interact(ui, st, items, i, &resp, r, searching, todo);
         }
     });
 }
@@ -961,7 +1281,7 @@ fn gallery(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, tod
                 let i = row * cols + c;
                 let Some(it) = items.get(i) else { break };
                 let r = Rect::from_min_size(line.min + vec2(c as f32 * (CELL.x + gap), 0.0), CELL);
-                let resp = ui.interact(r, egui::Id::unique(("files_cell", i)), Sense::click());
+                let resp = ui.interact(r, egui::Id::unique(("files_cell", i)), Sense::click_and_drag());
                 let sel = st.selected.contains(&it.key());
                 let p = ui.painter();
                 if sel {
@@ -969,8 +1289,7 @@ fn gallery(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, tod
                 } else if resp.hovered() {
                     p.rect_filled(r, CornerRadius::same(10), theme::overlay(6));
                 }
-                let (emoji, _) = icons::kind(&it.entry.name, it.entry.is_dir);
-                icons::paint(p, Rect::from_center_size(egui::pos2(r.center().x, r.top() + 44.0), vec2(56.0, 56.0)), emoji);
+                icons::paint(p, Rect::from_center_size(egui::pos2(r.center().x, r.top() + 44.0), vec2(56.0, 56.0)), it.emoji());
                 let name_rect = Rect::from_min_max(egui::pos2(r.left() + 8.0, r.top() + 80.0), egui::pos2(r.right() - 8.0, r.bottom() - 6.0));
                 if !name_cell(ui, st, it, name_rect) {
                     // Nom sur deux lignes au plus, centré.
@@ -980,7 +1299,7 @@ fn gallery(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], searching: bool, tod
                     let g = ui.painter().layout_job(job);
                     ui.painter().galley(egui::pos2(name_rect.center().x, name_rect.top()), g, theme::TEXT());
                 }
-                interact(ui, st, items, i, &resp, searching, todo);
+                interact(ui, st, items, i, &resp, r, searching, todo);
             }
         }
     });
@@ -1032,7 +1351,8 @@ fn stem_len(name: &str, is_dir: bool) -> usize {
 
 // --- Clic, double-clic, menu contextuel -------------------------------------------------
 
-fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &egui::Response, searching: bool, todo: &mut Vec<Do>) {
+#[allow(clippy::too_many_arguments)]
+fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &egui::Response, rect: Rect, searching: bool, todo: &mut Vec<Do>) {
     let it = &items[i];
     let mods = ui.input(|m| m.modifiers);
     if resp.clicked() {
@@ -1058,7 +1378,27 @@ fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &eg
         todo.push(Do::Open(it.clone()));
     }
     if resp.middle_clicked() && it.entry.is_dir {
-        todo.push(Do::NewTab(Place::Folder { root: it.root.clone(), path: it.path.clone() }));
+        todo.push(Do::NewTab(it.place()));
+    }
+    // Glisser : la sélection (ou cet élément s'il n'en fait pas partie), sauf un disque.
+    if resp.drag_started() && !(it.fixed() && Path::new(&it.path).parent().is_none()) {
+        if !st.selected.contains(&it.key()) {
+            st.selected = [it.key()].into();
+            st.anchor = Some(i);
+        }
+        let picked = items.iter().filter(|x| x.root == it.root && st.selected.contains(&x.key())).map(|x| (x.path.clone(), x.entry.is_dir)).collect();
+        egui::DragAndDrop::set_payload(ui.ctx(), DragItems { root: it.root.clone(), items: picked });
+    }
+    // Dossier : on peut y déposer (sauf s'il fait partie de ce qui est glissé).
+    if it.entry.is_dir
+        && let Some(p) = resp.dnd_hover_payload::<DragItems>()
+        && !(p.root == it.root && p.items.iter().any(|(x, _)| *x == it.path))
+    {
+        ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.5, theme::TEXT()), egui::StrokeKind::Inside);
+        if let Some(items) = resp.dnd_release_payload::<DragItems>() {
+            let root = if it.local() { LOCAL.to_string() } else { it.root.clone() };
+            todo.push(Do::Drop(items, root, it.path.clone(), ui.input(|i| i.modifiers.shift)));
+        }
     }
     if resp.secondary_clicked() && !st.selected.contains(&it.key()) {
         st.selected = [it.key()].into();
@@ -1073,17 +1413,15 @@ fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &eg
             ui.close();
         }
         if !many && it.entry.is_dir && ui.button(t!("Ouvrir dans un nouvel onglet", "Open in new tab")).clicked() {
-            todo.push(Do::NewTab(Place::Folder { root: it.root.clone(), path: it.path.clone() }));
+            todo.push(Do::NewTab(it.place()));
             ui.close();
         }
         if searching && !many && ui.button(t!("Ouvrir l'emplacement", "Open location")).clicked() {
             todo.push(Do::Reveal(it.clone()));
             ui.close();
         }
-        if !it.entry.is_dir && ui.button(t!("Télécharger", "Download")).clicked() {
-            for s in items.iter().filter(|x| st.selected.contains(&x.key()) && !x.entry.is_dir) {
-                todo.push(Do::Download(s.clone()));
-            }
+        if !it.local() && ui.button(t!("Télécharger…", "Download…")).clicked() {
+            todo.push(Do::Download(items.iter().filter(|x| st.selected.contains(&x.key()) && !x.local()).cloned().collect()));
             ui.close();
         }
         ui.separator();
@@ -1091,11 +1429,12 @@ fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &eg
             todo.push(Do::Copy(false));
             ui.close();
         }
-        if ui.button(t!("Couper", "Cut")).clicked() {
+        let fixed = it.fixed();
+        if !fixed && ui.button(t!("Couper", "Cut")).clicked() {
             todo.push(Do::Copy(true));
             ui.close();
         }
-        if !many && ui.button(t!("Renommer", "Rename")).clicked() {
+        if !many && !fixed && ui.button(t!("Renommer", "Rename")).clicked() {
             todo.push(Do::Rename(it.clone()));
             ui.close();
         }
@@ -1103,10 +1442,12 @@ fn interact(ui: &mut egui::Ui, st: &mut Tab, items: &[Item], i: usize, resp: &eg
             todo.push(Do::Favorite(it.root.clone(), it.path.clone()));
             ui.close();
         }
-        ui.separator();
-        if ui.button(RichText::new(t!("Mettre à la corbeille", "Move to trash")).color(theme::DANGER())).clicked() {
-            todo.push(Do::Delete);
-            ui.close();
+        if !fixed {
+            ui.separator();
+            if ui.button(RichText::new(t!("Mettre à la corbeille", "Move to trash")).color(theme::DANGER())).clicked() {
+                todo.push(Do::Delete);
+                ui.close();
+            }
         }
     });
 }
@@ -1167,10 +1508,13 @@ fn keyboard(ui: &mut egui::Ui, st: &mut State, items: &[Item], todo: &mut Vec<Do
         if i.consume_key(egui::Modifiers::NONE, Key::Escape) {
             if tab.selected.is_empty() { tab.query.clear() } else { tab.selected.clear() }
         }
-        if (i.consume_key(egui::Modifiers::NONE, Key::Backspace) || i.consume_key(egui::Modifiers::ALT, Key::ArrowUp))
-            && let Place::Folder { root, path } = &tab.place
-        {
-            todo.push(Do::Go(if path.is_empty() { Place::Home } else { Place::Folder { root: root.clone(), path: parent_of(path) } }));
+        if i.consume_key(egui::Modifiers::NONE, Key::Backspace) || i.consume_key(egui::Modifiers::ALT, Key::ArrowUp) {
+            match &tab.place {
+                Place::Folder { root, path } if !path.is_empty() => todo.push(Do::Go(Place::Folder { root: root.clone(), path: parent_of(path) })),
+                Place::Local { path } if !path.is_empty() => todo.push(Do::Go(Place::Local { path: local_parent(path) })),
+                Place::Home => {}
+                _ => todo.push(Do::Go(Place::Home)),
+            }
         }
         if i.consume_key(egui::Modifiers::ALT, Key::ArrowLeft) {
             todo.push(Do::Back);
@@ -1183,25 +1527,32 @@ fn keyboard(ui: &mut egui::Ui, st: &mut State, items: &[Item], todo: &mut Vec<Do
 
 // --- Barre d'état ----------------------------------------------------------------------
 
-fn status_bar(ui: &mut egui::Ui, st: &State, server: &Server, items: &[Item], last: &Option<(bool, String)>, transfers: &[crate::server::Transfer]) {
+fn status_bar(ui: &mut egui::Ui, st: &State, server: &Server, items: &[Item], last: &Option<(bool, String)>, transfers: &[Transfer], todo: &mut Vec<Do>) {
     let tab = &st.tabs[st.active];
     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), STATUS_H), Sense::hover());
     ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, theme::BORDER()));
     ui.scope_builder(egui::UiBuilder::new().max_rect(r.shrink2(vec2(0.0, 2.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
         let sel: Vec<&Item> = items.iter().filter(|i| tab.selected.contains(&i.key())).collect();
-        let mut text = if items.len() == 1 { t!("1 élément", "1 item").to_string() } else { tf!("{} éléments", "{} items", items.len()) };
+        let mut text = match (&tab.place, items.len()) {
+            (Place::Transfers, _) => String::new(),
+            (_, 1) => t!("1 élément", "1 item").to_string(),
+            (_, n) => tf!("{} éléments", "{} items", n),
+        };
         if !sel.is_empty() {
             let size: u64 = sel.iter().map(|i| i.entry.size).sum();
             text.push_str(&tf!("  ·  {} sélectionnés ({})", "  ·  {} selected ({})", sel.len(), bytes(size)));
         }
         if let Some(c) = &st.clip {
-            text.push_str(&if c.cut { tf!("  ·  {} à déplacer", "  ·  {} to move", c.paths.len()) } else { tf!("  ·  {} à copier", "  ·  {} to copy", c.paths.len()) });
+            text.push_str(&if c.cut { tf!("  ·  {} à déplacer", "  ·  {} to move", c.items.len()) } else { tf!("  ·  {} à copier", "  ·  {} to copy", c.items.len()) });
         }
         ui.label(RichText::new(text).small().color(theme::TEXT_MUTED()));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let running = transfers.iter().filter(|t| !t.done).count();
             if running > 0 {
-                ui.label(RichText::new(tf!("{} transfert(s) en cours", "{} transfer(s) running", running)).small().color(theme::TEXT_MUTED()));
+                let link = egui::Button::new(RichText::new(tf!("{} transfert(s) en cours", "{} transfer(s) running", running)).small().color(theme::LINK())).frame(false);
+                if ui.add(link).on_hover_text(t!("Voir les transferts", "See transfers")).clicked() {
+                    todo.push(Do::Go(Place::Transfers));
+                }
                 ui.spinner();
             } else if let Some((ok, msg)) = last {
                 if ui.small_button("✕").clicked() {
@@ -1209,11 +1560,6 @@ fn status_bar(ui: &mut egui::Ui, st: &State, server: &Server, items: &[Item], la
                 }
                 let t = if *ok { RichText::new(format!("✓ {msg}")).color(theme::TEXT_MUTED()) } else { RichText::new(format!("✗ {msg}")).color(theme::DANGER()) };
                 ui.add(egui::Label::new(t.small()).truncate());
-            }
-            if ui.small_button(t!("Ouvrir Téléchargements", "Open Downloads")).on_hover_text(crate::server::download_dir().display().to_string()).clicked() {
-                let dir = crate::server::download_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                crate::server::open_local(&dir);
             }
         });
     });
@@ -1242,6 +1588,10 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
             }
             return;
         }
+        Do::ToggleFloat => {
+            st.toggle_float = true;
+            return;
+        }
         _ => {}
     }
     let State { tabs, active, clip, copy_text, .. } = st;
@@ -1249,11 +1599,28 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
     let selected: Vec<&Item> = items.iter().filter(|i| tab.selected.contains(&i.key())).collect();
     match d {
         Do::Go(p) => navigate(tab, p),
-        Do::Open(it) if it.entry.is_dir => navigate(tab, Place::Folder { root: it.root.clone(), path: it.path.clone() }),
+        Do::Open(it) if it.entry.is_dir => navigate(tab, it.place()),
+        Do::Open(it) if it.local() => crate::server::open_local(Path::new(&it.path)),
         Do::Open(it) => server.download(&it.root, &it.path, true),
-        Do::Download(it) => server.download(&it.root, &it.path, false),
+        Do::Download(list) => {
+            // Windows : on choisit le dossier ; ailleurs : Téléchargements.
+            let server = server.handle_pub();
+            std::thread::spawn(move || {
+                #[cfg(windows)]
+                let dest = rfd::FileDialog::new().set_directory(crate::server::download_dir()).pick_folder();
+                #[cfg(not(windows))]
+                let dest = Some(crate::server::download_dir());
+                if let Some(dest) = dest {
+                    for it in list {
+                        server.download_to(&it.root, &it.path, it.entry.is_dir, dest.clone(), false);
+                    }
+                }
+            });
+        }
+        Do::Drop(d, root, path, mv) => send(server, &d.root, &d.items, &root, &path, mv, true),
         Do::Reveal(it) => {
-            navigate(tab, Place::Folder { root: it.root.clone(), path: it.parent.clone() });
+            let place = if it.local() { Place::Local { path: it.parent.clone() } } else { Place::Folder { root: it.root.clone(), path: it.parent.clone() } };
+            navigate(tab, place);
             tab.selected = [it.key()].into();
         }
         Do::Rename(it) => {
@@ -1267,25 +1634,34 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
         }
         Do::Copy(cut) => {
             if let Some(first) = selected.first() {
-                let c = Clip { cut, root: first.root.clone(), paths: selected.iter().filter(|i| i.root == first.root).map(|i| i.path.clone()).collect() };
-                *copy_text = Some(c.paths.iter().map(|p| format!("{} › {p}", c.root)).collect::<Vec<_>>().join("\n"));
+                let picked = selected.iter().filter(|i| i.root == first.root && !(cut && i.fixed()));
+                let c = Clip { cut, root: first.root.clone(), items: picked.map(|i| (i.path.clone(), i.entry.is_dir)).collect() };
+                let shown = |p: &String| if c.root == LOCAL { p.clone() } else { format!("{} › {p}", c.root) };
+                *copy_text = Some(c.items.iter().map(|(p, _)| shown(p)).collect::<Vec<_>>().join("\n"));
                 *clip = Some(c);
             }
         }
         Do::Paste => {
-            if let (Some(c), Some((root, path))) = (clip.clone(), tab.folder().filter(|_| !tab.searching())) {
-                let op = if c.cut { FileOp::Move } else { FileOp::Copy };
-                for p in &c.paths {
-                    let msg = if c.cut { tf!("{} déplacé", "{} moved", p) } else { tf!("{} copié", "{} copied", p) };
-                    server.files_op(op, &c.root, p, Some(root), Some(path), msg);
-                }
+            if let (Some(c), Some((root, path))) = (clip.clone(), tab.dest()) {
+                send(server, &c.root, &c.items, &root, &path, c.cut, false);
                 if c.cut {
                     *clip = None;
                 }
             }
         }
         Do::Delete => {
-            for it in &selected {
+            // Ce PC : vers la Corbeille de Windows.
+            let local: Vec<&&Item> = selected.iter().filter(|i| i.local() && !i.fixed()).collect();
+            if !local.is_empty() {
+                let r = trash::delete_all(local.iter().map(|i| &i.path)).map_err(|e| e.to_string());
+                let msg = if local.len() == 1 {
+                    tf!("{} mis à la corbeille", "{} moved to trash", local[0].entry.name)
+                } else {
+                    tf!("{} éléments mis à la corbeille", "{} items moved to trash", local.len())
+                };
+                local_done(server, r, msg);
+            }
+            for it in selected.iter().filter(|i| !i.local()) {
                 server.files_op(FileOp::Delete, &it.root, &it.path, None, None, tf!("{} mis à la corbeille", "{} moved to trash", it.entry.name));
             }
             tab.selected.clear();
@@ -1317,11 +1693,12 @@ fn run(d: Do, st: &mut State, server: &Server, prefs: &mut Prefs, items: &[Item]
         }
         Do::Refresh => {
             tab.requested = false;
+            tab.local = None;
             tab.sent_query.clear();
             server.files_roots();
         }
         Do::NewFolder => new_folder(tab, server),
-        Do::NewTab(_) | Do::CloseTab(_) | Do::SelectTab(_) => {}
+        Do::NewTab(_) | Do::CloseTab(_) | Do::SelectTab(_) | Do::ToggleFloat => {}
     }
 }
 
@@ -1331,6 +1708,12 @@ fn commit_rename(st: &mut Tab, server: &Server, items: &[Item]) {
         && let Some((old, new)) = st.renaming.take()
         && let Some(it) = items.iter().find(|i| i.entry.name == old && st.selected.contains(&i.key()))
     {
+        if it.local() {
+            let to = Path::new(&it.parent).join(&new);
+            let r = if to.exists() { Err(t!("ce nom existe déjà", "this name already exists").to_string()) } else { std::fs::rename(&it.path, &to).map_err(|e| e.to_string()) };
+            local_done(server, r, tf!("{} renommé en {}", "{} renamed to {}", old, new));
+            return;
+        }
         server.files_op(FileOp::Rename, &it.root, &it.path, None, Some(&new), tf!("{} renommé en {}", "{} renamed to {}", old, new));
     }
 }
@@ -1358,13 +1741,189 @@ fn reset_view(tab: &mut Tab) {
 
 /// Crée « Nouveau dossier » (ou « Nouveau dossier (2) »…) puis passe en renommage.
 fn new_folder(tab: &mut Tab, server: &Server) {
+    let base = t!("Nouveau dossier", "New folder");
+    if let Place::Local { path } = &tab.place
+        && !path.is_empty()
+    {
+        let dir = crate::server::free_local_name(Path::new(path), base);
+        let name = local_name(&dir.to_string_lossy());
+        let r = std::fs::create_dir(&dir).map_err(|e| e.to_string());
+        local_done(server, r, tf!("{} créé", "{} created", name));
+        tab.pending_rename = Some(name);
+        return;
+    }
     let Some((root, path)) = tab.folder() else { return };
     let (root, path) = (root.to_string(), path.to_string());
     let existing: Vec<String> = server.data().files.listing.as_ref().and_then(|l| l.as_ref().ok()).map(|l| l.entries.iter().map(|e| e.name.clone()).collect()).unwrap_or_default();
-    let base = t!("Nouveau dossier", "New folder");
     let name = std::iter::once(base.to_string()).chain((2..).map(|i| format!("{base} ({i})"))).find(|n| !existing.contains(n)).unwrap_or_default();
     server.files_op(FileOp::Mkdir, &root, &join(&path, &name), None, None, tf!("{} créé", "{} created", name));
     tab.pending_rename = Some(name);
+}
+
+/// Opération faite sur ce PC : message dans la barre d'état, dossiers affichés relus.
+fn local_done(server: &Server, r: Result<(), String>, ok_msg: String) {
+    let mut d = server.data();
+    d.files.last = Some(match r {
+        Ok(()) => (true, ok_msg),
+        Err(e) => (false, e),
+    });
+    d.files.local_gen += 1;
+}
+
+/// Copie (ou déplace) des éléments vers un dossier : selon les deux côtés, copie sur le serveur,
+/// téléchargement, envoi ou copie sur ce PC. `drag` : glissé-déposé (rien à faire dans son propre
+/// dossier ; un collage y fait une copie).
+fn send(server: &Server, src: &str, items: &[(String, bool)], dest_root: &str, dest: &str, mv: bool, drag: bool) {
+    let from_pc = src == LOCAL;
+    let skip = |p: &str| {
+        if src != dest_root {
+            return false;
+        }
+        // Un dossier dans lui-même, ou déposé là où il est déjà.
+        let (inside, parent) = if from_pc { (Path::new(dest).starts_with(p), local_parent(p)) } else { (dest == p || dest.starts_with(&format!("{p}/")), parent_of(p)) };
+        inside || (drag || mv) && parent == dest
+    };
+    let items: Vec<&(String, bool)> = items.iter().filter(|(p, _)| !skip(p)).collect();
+    match (from_pc, dest_root == LOCAL) {
+        (false, false) => {
+            let op = if mv { FileOp::Move } else { FileOp::Copy };
+            for (p, _) in items {
+                let msg = if mv { tf!("{} déplacé", "{} moved", p) } else { tf!("{} copié", "{} copied", p) };
+                server.files_op(op, src, p, Some(dest_root), Some(dest), msg);
+            }
+        }
+        (false, true) => {
+            for (p, is_dir) in items {
+                server.download_to(src, p, *is_dir, PathBuf::from(dest), false);
+            }
+        }
+        (true, false) => server.upload(dest_root, dest, items.iter().map(|(p, _)| PathBuf::from(p)).collect()),
+        (true, true) => server.local_copy(items.iter().map(|(p, _)| PathBuf::from(p)).collect(), PathBuf::from(dest), mv),
+    }
+}
+
+/// Nom de ce qui est glissé, près du pointeur.
+fn drag_ghost(ctx: &egui::Context) {
+    let (Some(d), Some(pos)) = (egui::DragAndDrop::payload::<DragItems>(ctx), ctx.pointer_interact_pos()) else { return };
+    let text = match d.items.as_slice() {
+        [(p, _)] => {
+            if d.root == LOCAL {
+                local_name(p)
+            } else {
+                p.rsplit('/').next().unwrap_or(p).to_string()
+            }
+        }
+        many => tf!("{} éléments", "{} items", many.len()),
+    };
+    let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("files_drag_ghost")));
+    let g = p.layout_no_wrap(text, FontId::proportional(13.0), theme::TEXT());
+    let r = Rect::from_min_size(pos + vec2(16.0, 12.0), g.size() + vec2(20.0, 12.0));
+    p.rect_filled(r, CornerRadius::same(6), theme::SURFACE_HI());
+    p.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, theme::BORDER()), egui::StrokeKind::Inside);
+    p.galley(r.min + vec2(10.0, 6.0), g, theme::TEXT());
+}
+
+// --- Transferts --------------------------------------------------------------------------
+
+/// Envois, téléchargements et copies : progression, vitesse, temps restant, résultat.
+fn transfers_page(ui: &mut egui::Ui, server: &Server, transfers: &[Transfer], todo: &mut Vec<Do>) {
+    ui.horizontal(|ui| {
+        let running = transfers.iter().filter(|t| !t.done).count();
+        let text = if running > 0 { tf!("{} en cours", "{} running", running) } else { tf!("{} transfert(s)", "{} transfer(s)", transfers.len()) };
+        ui.label(RichText::new(text).color(theme::TEXT_MUTED()));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add_enabled(transfers.iter().any(|t| t.done), egui::Button::new(t!("Effacer les terminés", "Clear finished"))).clicked() {
+                server.clear_transfers();
+            }
+        });
+    });
+    ui.add_space(8.0);
+    if transfers.is_empty() {
+        ui.add_space(40.0);
+        widgets::empty_state(
+            ui,
+            t!("Aucun transfert", "No transfer"),
+            t!("Glisse des fichiers d'un dossier du serveur vers un dossier de ce PC (ou l'inverse)", "Drag files from a server folder to a folder of this PC (or back)"),
+        );
+        return;
+    }
+    let remote = |(root, path): &(String, String)| [root.as_str()].into_iter().chain(path.split('/').filter(|p| !p.is_empty())).collect::<Vec<_>>().join(" › ");
+    egui::ScrollArea::vertical().id_salt("files_transfers").auto_shrink([false, false]).show(ui, |ui| {
+        for t in transfers.iter().rev() {
+            egui::Frame::new().fill(theme::overlay(4)).corner_radius(CornerRadius::same(8)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let (ir, _) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::hover());
+                    icons::paint(ui.painter(), ir, icons::kind(&t.name, t.local.is_dir()).0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&t.name).strong().color(theme::TEXT()));
+                        let parent = t.local.parent().map(|p| p.display().to_string()).unwrap_or_default();
+                        let route = match t.kind {
+                            Kind::Download => tf!("Téléchargement · {} → {}", "Download · {} → {}", remote(&t.remote), parent),
+                            Kind::Upload => tf!("Envoi · {} → {}", "Upload · {} → {}", parent, remote(&t.remote)),
+                            Kind::Local => tf!("Copie sur ce PC · → {}", "Copy on this PC · → {}", parent),
+                        };
+                        ui.add(egui::Label::new(RichText::new(route).small().color(theme::TEXT_MUTED())).truncate());
+                        let secs = t.finished.unwrap_or_else(Instant::now).duration_since(t.started).as_secs_f64();
+                        let frac = if t.total > 0 {
+                            t.bytes as f32 / t.total as f32
+                        } else if t.done {
+                            1.0
+                        } else {
+                            0.0
+                        };
+                        if !t.done {
+                            ui.add(egui::ProgressBar::new(frac.clamp(0.0, 1.0)).desired_height(6.0));
+                        }
+                        let status = match (&t.error, t.done) {
+                            (Some(e), _) => RichText::new(tf!("✗ {}", "✗ {}", e)).color(theme::DANGER()),
+                            (None, true) => RichText::new(tf!("✓ Terminé · {} en {}", "✓ Done · {} in {}", bytes(t.total.max(t.bytes)), duration(secs))).color(theme::TEXT_MUTED()),
+                            (None, false) => {
+                                let speed = if secs > 0.3 { t.bytes as f64 / secs } else { 0.0 };
+                                let mut s = if t.total > 0 { tf!("{} sur {}", "{} of {}", bytes(t.bytes), bytes(t.total)) } else { bytes(t.bytes) };
+                                if speed > 0.0 {
+                                    s.push_str(&format!(" · {}/s", bytes(speed as u64)));
+                                    if t.total > t.bytes {
+                                        s.push_str(&tf!(" · {} restantes", " · {} left", duration((t.total - t.bytes) as f64 / speed)));
+                                    }
+                                }
+                                RichText::new(s).color(theme::TEXT_MUTED())
+                            }
+                        };
+                        ui.label(status.small());
+                        if t.done && t.error.is_none() {
+                            ui.horizontal(|ui| match t.kind {
+                                Kind::Download | Kind::Local => {
+                                    if ui.small_button(t!("Ouvrir", "Open")).clicked() {
+                                        crate::server::open_local(&t.local);
+                                    }
+                                    if ui.small_button(t!("Afficher dans le dossier", "Show in folder")).clicked() {
+                                        crate::server::reveal_local(&t.local);
+                                    }
+                                }
+                                Kind::Upload => {
+                                    if ui.small_button(t!("Afficher sur le serveur", "Show on the server")).clicked() {
+                                        todo.push(Do::Go(Place::Folder { root: t.remote.0.clone(), path: t.remote.1.clone() }));
+                                    }
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+            ui.add_space(6.0);
+        }
+    });
+}
+
+/// « 8 s », « 2 min 05 s », « 1 h 03 min ».
+fn duration(secs: f64) -> String {
+    let s = secs.round().max(0.0) as u64;
+    match s {
+        0..60 => format!("{s} s"),
+        60..3600 => format!("{} min {:02} s", s / 60, s % 60),
+        _ => format!("{} h {:02} min", s / 3600, s / 60 % 60),
+    }
 }
 
 /// Tri façon Explorateur : dossiers d'abord, puis la colonne choisie.
@@ -1402,6 +1961,19 @@ mod tests {
         assert_eq!(names, ["alpha", "Zeta", "a.png", "b.txt"]);
         sort_items(&mut v, Sort::Size, true);
         assert_eq!(v[2].entry.name, "a.png");
+    }
+
+    #[test]
+    fn durations() {
+        assert_eq!(duration(8.2), "8 s");
+        assert_eq!(duration(125.0), "2 min 05 s");
+        assert_eq!(duration(3780.0), "1 h 03 min");
+    }
+
+    #[test]
+    fn local_names() {
+        assert_eq!(local_name("/home/me/Documents"), "Documents");
+        assert_eq!(local_name("/"), "/");
     }
 
     #[test]
