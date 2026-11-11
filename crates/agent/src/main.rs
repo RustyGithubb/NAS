@@ -7,11 +7,14 @@
 //! Chaque demande doit porter la clé d'accès (voir `key.rs`) ; `nas-agent --show-key` l'affiche.
 
 mod backend;
+mod files;
 mod key;
 mod sampler;
 mod sites;
 
 use std::sync::{Arc, Mutex};
+
+use nas_proto::FileOp;
 
 use nas_proto::{Action, ActionResult, Services, SiteAction, Sites, Status};
 use serde::Serialize;
@@ -61,16 +64,58 @@ fn main() {
     let file = key::path();
     println!("Clé d'accès : {} (affichable avec --show-key)", file.canonicalize().unwrap_or(file).display());
 
+    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new() });
+    // Une demande = un fil : un gros transfert de fichier ne bloque pas le reste.
     for request in server.incoming_requests() {
-        let auth = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str());
-        let (code, body) =
-            if key::authorized(auth, &key) { route(request.method(), request.url(), &status, backend.as_ref(), sites.as_ref()) } else { error(401, "clé d'accès refusée") };
-        let header = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("en-tête valide");
-        let _ = request.respond(tiny_http::Response::from_string(body).with_status_code(code).with_header(header));
+        let ctx = ctx.clone();
+        std::thread::spawn(move || handle(&ctx, request));
     }
 }
 
-fn route(method: &tiny_http::Method, url: &str, status: &Mutex<Status>, backend: &dyn backend::Backend, sites: &dyn sites::SitesBackend) -> Reply {
+/// Tout ce dont les demandes ont besoin.
+struct Ctx {
+    key: String,
+    status: Arc<Mutex<Status>>,
+    backend: Box<dyn backend::Backend>,
+    sites: Box<dyn sites::SitesBackend>,
+    files: files::Files,
+}
+
+fn handle(ctx: &Ctx, mut request: tiny_http::Request) {
+    let auth = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str());
+    let (code, body) = if !key::authorized(auth, &ctx.key) {
+        error(401, "clé d'accès refusée")
+    } else {
+        let url = request.url().to_string();
+        let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+        match (request.method(), path) {
+            // Téléchargement : le fichier part tel quel, pas en JSON.
+            (tiny_http::Method::Get, "/api/files/download") => {
+                let target = param(query, "root").zip(param(query, "path")).ok_or("paramètres manquants".to_string()).and_then(|(r, p)| ctx.files.resolve(&r, &p));
+                match target.and_then(|t| std::fs::File::open(&t).map_err(|e| e.to_string())) {
+                    Ok(f) => {
+                        let _ = request.respond(tiny_http::Response::from_file(f));
+                        return;
+                    }
+                    Err(e) => error(404, &e),
+                }
+            }
+            (tiny_http::Method::Post, "/api/files/upload") => match param(query, "root").zip(param(query, "path")) {
+                Some((r, p)) => match ctx.files.upload(&r, &p, request.as_reader()) {
+                    Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),
+                    Err(message) => json(200, &ActionResult { ok: false, message }),
+                },
+                None => error(400, "paramètres manquants"),
+            },
+            _ => route(request.method(), &url, ctx),
+        }
+    };
+    let header = tiny_http::Header::from_bytes("Content-Type", "application/json").expect("en-tête valide");
+    let _ = request.respond(tiny_http::Response::from_string(body).with_status_code(code).with_header(header));
+}
+
+fn route(method: &tiny_http::Method, url: &str, ctx: &Ctx) -> Reply {
+    let (status, backend, sites) = (&ctx.status, ctx.backend.as_ref(), ctx.sites.as_ref());
     use tiny_http::Method::{Get, Post};
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     let parts: Vec<&str> = path.trim_matches('/').split('/').collect();
@@ -110,6 +155,23 @@ fn route(method: &tiny_http::Method, url: &str, status: &Mutex<Status>, backend:
                 return error(400, "nom de site invalide");
             }
             match sites.action(name, action) {
+                Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),
+                Err(message) => json(200, &ActionResult { ok: false, message }),
+            }
+        }
+        (Get, ["api", "files", "roots"]) => json(200, &ctx.files.roots_info()),
+        (Get, ["api", "files", "list"]) => match param(query, "root") {
+            Some(root) => match ctx.files.list(&root, &param(query, "path").unwrap_or_default()) {
+                Ok(l) => json(200, &l),
+                Err(e) => error(404, &e),
+            },
+            None => error(400, "paramètres manquants"),
+        },
+        (Get, ["api", "files", "search"]) => json(200, &ctx.files.index.search(&param(query, "q").unwrap_or_default())),
+        (Post, ["api", "files", verb]) => {
+            let Some(op) = FileOp::from_verb(verb) else { return error(400, "action inconnue") };
+            let (Some(root), Some(path)) = (param(query, "root"), param(query, "path")) else { return error(400, "paramètres manquants") };
+            match ctx.files.op(op, &root, &path, param(query, "to_root").as_deref(), param(query, "to").as_deref()) {
                 Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),
                 Err(message) => json(200, &ActionResult { ok: false, message }),
             }

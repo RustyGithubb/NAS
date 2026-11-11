@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use nas_proto::{Action, ActionResult, LogEntry, Logs, Services, SiteAction, Sites, Status};
+use nas_proto::{Action, ActionResult, FileOp, Listing, LogEntry, Logs, Root, SearchResult, Services, SiteAction, Sites, Status};
 
 /// Intervalle entre deux demandes d'état.
 const PERIOD: Duration = Duration::from_secs(2);
@@ -58,11 +58,38 @@ pub struct Shared {
     /// Résultat de la dernière action : service, action, résultat.
     pub last_action: Option<(String, Action, ActionResult)>,
     pub logs: LogView,
+    pub files: FilesData,
+}
+
+/// Onglet Fichiers : emplacements, dossier affiché, recherche, transferts.
+#[derive(Default)]
+pub struct FilesData {
+    pub roots: Option<Vec<Root>>,
+    /// Dossier demandé (emplacement, chemin) et son contenu.
+    pub listing_for: Option<(String, String)>,
+    pub listing: Option<Result<Listing, String>>,
+    pub loading: bool,
+    /// Dernière recherche : requête et résultat.
+    pub search: Option<(String, Result<SearchResult, String>)>,
+    /// Résultat de la dernière opération (réussie ?, message).
+    pub last: Option<(bool, String)>,
+    pub transfers: Vec<Transfer>,
+}
+
+/// Envoi ou téléchargement.
+#[derive(Clone)]
+pub struct Transfer {
+    pub name: String,
+    pub upload: bool,
+    pub done: bool,
+    pub error: Option<String>,
 }
 
 pub struct Server {
     shared: Arc<Mutex<Shared>>,
     agent: ureq::Agent,
+    /// Pour les transferts de fichiers : pas de limite de durée totale, seulement d'inactivité.
+    transfer_agent: ureq::Agent,
     ctx: egui::Context,
 }
 
@@ -93,7 +120,8 @@ impl Server {
                 std::thread::sleep(PERIOD.saturating_sub(started.elapsed()));
             }
         });
-        Server { shared, agent, ctx: ctx.clone() }
+        let transfer_agent = ureq::AgentBuilder::new().timeout_connect(TIMEOUT).timeout_read(Duration::from_secs(60)).timeout_write(Duration::from_secs(60)).build();
+        Server { shared, agent, transfer_agent, ctx: ctx.clone() }
     }
 
     /// Accès aux données partagées (liste des services, journal…).
@@ -229,10 +257,198 @@ impl Server {
         self.ctx.request_repaint_after(LOG_PERIOD);
     }
 
+    // --- Fichiers ------------------------------------------------------------------------
+
+    /// Lance `job` dans un fil, avec l'agent visé à cet instant ; `done` range le résultat
+    /// (seulement si l'adresse et la clé n'ont pas changé entre-temps).
+    fn spawn_files<T: Send + 'static>(&self, job: impl FnOnce(&ureq::Agent, &ureq::Agent, &Target) -> T + Send + 'static, done: impl FnOnce(&mut FilesData, T) + Send + 'static) {
+        let to = Target::of(&self.data());
+        let (shared, agent, transfer, ctx) = (self.shared.clone(), self.agent.clone(), self.transfer_agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let out = job(&agent, &transfer, &to);
+            let mut s = lock(&shared);
+            if to.current(&s) {
+                done(&mut s.files, out);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    pub fn files_roots(&self) {
+        self.spawn_files(|a, _, to| get::<Vec<Root>>(a, to, "/api/files/roots"), |f, r| f.roots = r.ok());
+    }
+
+    /// Demande le contenu d'un dossier.
+    pub fn files_list(&self, root: &str, path: &str) {
+        {
+            let mut s = self.data();
+            s.files.listing_for = Some((root.to_string(), path.to_string()));
+            s.files.loading = true;
+        }
+        let key = (root.to_string(), path.to_string());
+        let url = format!("/api/files/list?root={}&path={}", urlencoding::encode(root), urlencoding::encode(path));
+        self.spawn_files(
+            move |a, _, to| get::<Listing>(a, to, &url),
+            move |f, r| {
+                // Un autre dossier a été demandé entre-temps : résultat ignoré.
+                if f.listing_for.as_ref() == Some(&key) {
+                    f.listing = Some(r);
+                    f.loading = false;
+                }
+            },
+        );
+    }
+
+    /// Recherche dans l'index de l'agent (instantané, comme Everything).
+    pub fn files_search(&self, q: &str) {
+        let q = q.to_string();
+        let url = format!("/api/files/search?q={}", urlencoding::encode(&q));
+        self.spawn_files(move |a, _, to| get::<SearchResult>(a, to, &url), move |f, r| f.search = Some((q, r)));
+    }
+
+    /// Opération sur un élément, puis rafraîchit le dossier affiché.
+    pub fn files_op(&self, op: FileOp, root: &str, path: &str, to_root: Option<&str>, to: Option<&str>, done_msg: String) {
+        let mut url = format!("/api/files/{}?root={}&path={}", op.verb(), urlencoding::encode(root), urlencoding::encode(path));
+        if let Some(r) = to_root {
+            url.push_str(&format!("&to_root={}", urlencoding::encode(r)));
+        }
+        if let Some(t) = to {
+            url.push_str(&format!("&to={}", urlencoding::encode(t)));
+        }
+        let me = self.handle();
+        self.spawn_files(
+            move |a, _, to| match to.request(a, "POST", &url).call() {
+                Ok(r) => r.into_json::<ActionResult>().map_err(|e| e.to_string()),
+                Err(e) => Err(describe(e)),
+            },
+            move |f, r| {
+                f.last = Some(match r {
+                    Ok(res) if res.ok => (true, done_msg),
+                    Ok(res) => (false, res.message),
+                    Err(e) => (false, e),
+                });
+                me.refresh_files(f);
+            },
+        );
+    }
+
+    /// Télécharge un fichier dans « Téléchargements\NAS » ; `open` : l'ouvre ensuite.
+    pub fn download(&self, root: &str, path: &str, open: bool) {
+        let name = path.rsplit('/').next().unwrap_or(path).to_string();
+        self.data().files.transfers.push(Transfer { name: name.clone(), upload: false, done: false, error: None });
+        let url = format!("/api/files/download?root={}&path={}", urlencoding::encode(root), urlencoding::encode(path));
+        let n = name.clone();
+        self.spawn_files(
+            move |_, t, to| -> Result<std::path::PathBuf, String> {
+                let dir = download_dir();
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                let target = free_local_name(&dir, &n);
+                let resp = to.request(t, "GET", &url).call().map_err(describe)?;
+                let mut file = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+                std::io::copy(&mut resp.into_reader(), &mut file).map_err(|e| e.to_string())?;
+                if open {
+                    open_local(&target);
+                }
+                Ok(target)
+            },
+            move |f, r| {
+                if let Some(tr) = f.transfers.iter_mut().rev().find(|t| t.name == name && !t.upload && !t.done) {
+                    tr.done = true;
+                    tr.error = r.as_ref().err().cloned();
+                }
+                f.last = Some(match r {
+                    Ok(p) => (true, tf!("{} téléchargé dans {}", "{} downloaded to {}", name, p.parent().map(|d| d.display().to_string()).unwrap_or_default())),
+                    Err(e) => (false, e),
+                });
+            },
+        );
+    }
+
+    /// Envoie des fichiers de ce PC dans le dossier `dir` de l'emplacement `root`.
+    pub fn upload(&self, root: &str, dir: &str, local: Vec<std::path::PathBuf>) {
+        for file in local.into_iter().filter(|p| p.is_file()) {
+            let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.data().files.transfers.push(Transfer { name: name.clone(), upload: true, done: false, error: None });
+            let remote = if dir.is_empty() { name.clone() } else { format!("{dir}/{name}") };
+            let url = format!("/api/files/upload?root={}&path={}", urlencoding::encode(root), urlencoding::encode(&remote));
+            let me = self.handle();
+            self.spawn_files(
+                move |_, t, to| -> Result<(), String> {
+                    let f = std::fs::File::open(&file).map_err(|e| e.to_string())?;
+                    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+                    let r = to.request(t, "POST", &url).set("Content-Length", &len.to_string()).send(f).map_err(describe)?;
+                    let res: ActionResult = r.into_json().map_err(|e| e.to_string())?;
+                    if res.ok { Ok(()) } else { Err(res.message) }
+                },
+                move |f, r| {
+                    if let Some(tr) = f.transfers.iter_mut().rev().find(|t| t.name == name && t.upload && !t.done) {
+                        tr.done = true;
+                        tr.error = r.as_ref().err().cloned();
+                    }
+                    f.last = Some(match r {
+                        Ok(()) => (true, tf!("{} envoyé", "{} uploaded", name)),
+                        Err(e) => (false, e),
+                    });
+                    me.refresh_files(f);
+                },
+            );
+        }
+    }
+
+    /// Copie pour lancer des demandes depuis un autre fil (fenêtre « Ouvrir » de Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn handle_pub(&self) -> Server {
+        self.handle()
+    }
+
+    /// Copie légère pour relancer des demandes depuis un fil.
+    fn handle(&self) -> Server {
+        Server { shared: self.shared.clone(), agent: self.agent.clone(), transfer_agent: self.transfer_agent.clone(), ctx: self.ctx.clone() }
+    }
+
+    /// Redemande le dossier affiché et les emplacements (après une modification). Appelée avec
+    /// le verrou déjà pris : les demandes partent dans un autre fil.
+    fn refresh_files(&self, f: &mut FilesData) {
+        let Some((root, path)) = f.listing_for.clone() else { return };
+        let me = self.handle();
+        std::thread::spawn(move || {
+            me.files_list(&root, &path);
+            me.files_roots();
+        });
+    }
+
     /// Vide le journal affiché (les lignes suivantes continuent d'arriver).
     pub fn clear_logs(&self) {
         self.data().logs.entries.clear();
     }
+}
+
+/// Dossier des téléchargements : « Téléchargements\NAS ».
+pub fn download_dir() -> std::path::PathBuf {
+    directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.to_path_buf())).unwrap_or_else(std::env::temp_dir).join("NAS")
+}
+
+/// Nom libre dans `dir` : « photo.jpg », sinon « photo (2).jpg »…
+fn free_local_name(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s, format!(".{e}")),
+        _ => (name, String::new()),
+    };
+    (2..).map(|i| dir.join(format!("{stem} ({i}){ext}"))).find(|p| !p.exists()).unwrap_or(first)
+}
+
+/// Ouvre un fichier ou un dossier de ce PC avec le programme par défaut.
+pub fn open_local(path: &std::path::Path) {
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer").arg(path).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
 fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {

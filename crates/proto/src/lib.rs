@@ -7,11 +7,19 @@
 //! - `GET  /api/logs/<unité>?after=<curseur>` → [`Logs`] (curseur encodé pour l'URL)
 //! - `GET  /api/sites` → [`Sites`]
 //! - `POST /api/sites/<nom>/<online|maintenance|offline|backup>` → [`ActionResult`]
+//! - `GET  /api/files/roots` → `Vec<`[`Root`]`>`
+//! - `GET  /api/files/list?root=&path=` → [`Listing`]
+//! - `GET  /api/files/search?q=` → [`SearchResult`]
+//! - `POST /api/files/<mkdir|rename|delete|copy|move>?…` → [`ActionResult`] (voir [`FileOp`])
+//! - `GET  /api/files/download?root=&path=` → contenu du fichier
+//! - `POST /api/files/upload?root=&path=` (corps = contenu) → [`ActionResult`]
+//!
+//! Chemins de fichiers : toujours relatifs à un emplacement (`root`), séparés par `/`.
 
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;
@@ -212,6 +220,102 @@ impl SiteAction {
     }
 }
 
+/// Emplacement de stockage du serveur (médias des sites, partages, sauvegardes…).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Root {
+    /// Nom affiché, sert d'identifiant (« Médias »).
+    pub name: String,
+    /// Dossier réel sur le serveur (« /srv/nas/medias »), pour information.
+    pub path: String,
+    /// Espace libre et total du disque qui le contient (octets).
+    pub free: u64,
+    pub total: u64,
+}
+
+/// Élément d'un dossier.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub name: String,
+    pub is_dir: bool,
+    /// Taille en octets (0 pour un dossier).
+    pub size: u64,
+    /// Dernière modification (millisecondes depuis 1970).
+    pub modified_ms: i64,
+}
+
+/// Contenu d'un dossier.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Listing {
+    pub root: String,
+    pub path: String,
+    pub entries: Vec<Entry>,
+}
+
+/// Résultat de recherche : un élément et son emplacement.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Hit {
+    pub root: String,
+    /// Chemin complet de l'élément (dossier parent + nom).
+    pub path: String,
+    pub entry: Entry,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub hits: Vec<Hit>,
+    /// Il y avait plus de résultats que ceux renvoyés.
+    pub truncated: bool,
+    /// Nombre d'éléments indexés (tous emplacements confondus).
+    pub indexed: usize,
+}
+
+/// Opération sur les fichiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileOp {
+    /// Nouveau dossier `path` (paramètre `path` = chemin complet du dossier à créer).
+    Mkdir,
+    /// Renommer `path` en `to` (nouveau nom, sans dossier).
+    Rename,
+    /// Mettre `path` à la corbeille de son emplacement.
+    Delete,
+    /// Copier `path` dans le dossier `to` de l'emplacement `to_root`.
+    Copy,
+    /// Déplacer `path` dans le dossier `to` de l'emplacement `to_root`.
+    Move,
+}
+
+impl FileOp {
+    pub const ALL: [FileOp; 5] = [FileOp::Mkdir, FileOp::Rename, FileOp::Delete, FileOp::Copy, FileOp::Move];
+
+    pub fn verb(self) -> &'static str {
+        match self {
+            FileOp::Mkdir => "mkdir",
+            FileOp::Rename => "rename",
+            FileOp::Delete => "delete",
+            FileOp::Copy => "copy",
+            FileOp::Move => "move",
+        }
+    }
+
+    pub fn from_verb(v: &str) -> Option<FileOp> {
+        Self::ALL.into_iter().find(|o| o.verb() == v)
+    }
+}
+
+/// Dossier de corbeille de chaque emplacement (masqué dans les listes).
+pub const TRASH_DIR: &str = ".corbeille";
+
+/// Chemin relatif sans danger : pas de `..`, pas de chemin absolu, pas de lecteur Windows,
+/// pas de caractère nul. Le chemin vide désigne la racine de l'emplacement.
+pub fn safe_rel_path(path: &str) -> bool {
+    !path.contains('\0') && !path.starts_with('/') && !path.contains(':') && path.split(['/', '\\']).all(|part| part != ".." && part != ".")
+}
+
+/// Nom de fichier acceptable (un seul élément, pas de séparateur).
+pub fn safe_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 255 && name != "." && name != ".." && !name.contains(['/', '\\', '\0', ':'])
+}
+
 /// Nom de site acceptable : lettres minuscules, chiffres et tirets (il sert de nom de fichier).
 pub fn valid_site_name(name: &str) -> bool {
     (1..=40).contains(&name.len()) && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
@@ -246,6 +350,23 @@ mod tests {
         assert!(!valid_site_name(""));
         for a in SiteAction::ALL {
             assert_eq!(SiteAction::from_verb(a.verb()), Some(a));
+        }
+    }
+
+    #[test]
+    fn paths() {
+        assert!(safe_rel_path(""));
+        assert!(safe_rel_path("photos/2026/plage.jpg"));
+        assert!(!safe_rel_path("../etc/passwd"));
+        assert!(!safe_rel_path("a/../../b"));
+        assert!(!safe_rel_path("/etc"));
+        assert!(!safe_rel_path("C:/Windows"));
+        assert!(!safe_rel_path("a\\..\\b"));
+        assert!(safe_name("rapport final.pdf"));
+        assert!(!safe_name("a/b"));
+        assert!(!safe_name(".."));
+        for o in FileOp::ALL {
+            assert_eq!(FileOp::from_verb(o.verb()), Some(o));
         }
     }
 

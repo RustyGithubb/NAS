@@ -16,3 +16,6 @@
 - Journaux façon Terminal Windows (couleurs « Campbell ») : barre d'onglets avec le service ouvert, terminal qui occupe tout le panneau, curseur clignotant.
 - Tableau de bord sur une seule grille : même écart entre tuiles, entre tuiles et panneaux, et entre panneaux ; panneaux alignés sur les tuiles.
 - Tableau de bord : processeur sur toute la largeur (cœurs en grille équilibrée), stockage en dessous avec l'espace libre ; jauges sur toute la largeur disponible.
+- Fichiers : explorateur des emplacements du serveur (Médias, Partage, Sauvegardes) en liste ou en galerie avec des émojis par type ; précédent / suivant / parent, fil d'Ariane, tri par colonne, sélection multiple (Ctrl, Maj), renommer (F2), nouveau dossier, copier / couper / coller, corbeille, favoris, menu clic droit, raccourcis clavier.
+- Fichiers : recherche instantanée dans tout le serveur façon Everything (`*.png`, `ext:jpg;png`, `dossier:`), index tenu par l'agent.
+- Fichiers : envoi par glisser-déposer ou bouton « Envoyer… », téléchargement dans Téléchargements\NAS (double-clic = télécharger et ouvrir).

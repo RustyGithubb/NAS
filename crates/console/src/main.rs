@@ -5,6 +5,7 @@
 #[macro_use]
 mod i18n;
 mod app;
+mod icons;
 mod liquid;
 mod prefs;
 mod secret;

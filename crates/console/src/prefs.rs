@@ -21,6 +21,17 @@ pub struct Prefs {
     pub animation: Animation,
     /// Police et taille de chaque groupe de textes.
     pub fonts: FontPrefs,
+    /// Onglet Fichiers : affichage en galerie (sinon en liste).
+    pub files_gallery: bool,
+    /// Onglet Fichiers : dossiers favoris.
+    pub favorites: Vec<Favorite>,
+}
+
+/// Dossier favori de l'onglet Fichiers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Favorite {
+    pub root: String,
+    pub path: String,
 }
 
 impl Default for Prefs {
@@ -31,6 +42,8 @@ impl Default for Prefs {
             agent_addr: format!("127.0.0.1:{}", nas_proto::DEFAULT_PORT),
             animation: Animation::default(),
             fonts: FontPrefs::default(),
+            files_gallery: false,
+            favorites: Vec::new(),
         }
     }
 }

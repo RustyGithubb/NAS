@@ -39,13 +39,15 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - sidebar.rs : pilule flottante, logo vectoriel (roue au clic → tremblement des cartes), icônes
 - prefs.rs : réglages (data/prefs.json en dev ; thème, langue, adresse, animation, polices), enregistrés 0,5 s après la dernière modification
 - secret.rs : clé d'accès dans le coffre du système (crate keyring), jamais dans prefs.json
-- server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions et journaux dans des fils à part)
-- tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (vide), settings.rs
+- server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions, journaux, fichiers et transferts dans des fils à part ; téléchargements dans Téléchargements\NAS)
+- icons.rs : émojis Twemoji (assets/emoji, CC-BY 4.0) par type de fichier et par emplacement
+- tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (explorateur : liste / galerie, recherche instantanée, presse-papiers, favoris, envois), settings.rs
 
 ## Agent (crates/agent/src)
 - main.rs : serveur HTTP (tiny_http), routes `/api/…` ; écoute sur `NAS_AGENT_ADDR` (défaut 127.0.0.1:7878)
 - key.rs : clé d'accès (créée au premier lancement, fichier 600), vérifiée sur chaque demande ; `--show-key`
 - backend/ : services et journaux — systemd.rs (`systemctl`, `journalctl`), mock.rs (simulation hors Linux ou `NAS_AGENT_MOCK=1`)
+- files/ : emplacements (`NAS_AGENT_ROOTS="Nom=chemin;…"`), opérations (corbeille `.corbeille`), index.rs = index en mémoire façon Everything (refait toutes les 5 min ou après une modification)
 - sites/ : sites web — caddy.rs (fichier par site dans /etc/caddy/sites, sauvegardes tar + mysqldump), mock.rs
 - sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
 - Routes et types JSON : `crates/proto/src/lib.rs`
@@ -59,4 +61,4 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 3. Agent (mesures réelles via sysinfo) + tableau de bord de la console (fait).
 4. Contrôle des services, journaux en direct (fait ; backend systemd pas encore testé sur une vraie machine).
 5. Clé d'accès entre console et agent (fait). Le chiffrement du trafic viendra de WireGuard.
-6. Onglet Sites (fait, simulé) ; à faire : onglet Fichiers (doit montrer /srv/nas/medias), page de liens temporaire, migration du WordPress OVH.
+6. Onglet Sites (fait, simulé) ; onglet Fichiers (fait) ; à faire : vignettes d'images en galerie, restauration de la corbeille, page de liens temporaire, migration du WordPress OVH.

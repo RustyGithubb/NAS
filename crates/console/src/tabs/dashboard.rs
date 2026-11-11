@@ -164,7 +164,7 @@ fn pct(used: u64, total: u64) -> f32 {
 }
 
 /// Taille lisible : « 3,2 Go » / « 3.2 GB ».
-fn bytes(n: u64) -> String {
+pub fn bytes(n: u64) -> String {
     const UNITS_FR: [&str; 5] = ["o", "Ko", "Mo", "Go", "To"];
     const UNITS_EN: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let units = t!(UNITS_FR, UNITS_EN);

@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 nas-proto = { path = "../proto" }
+# Images des émojis (Twemoji, en PNG dans assets/emoji).
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Heure locale des lignes de journal.
 chrono = "0.4.45"
 directories = "6.0.0"
@@ -22,3 +24,5 @@ urlencoding = "2.1.3"
 [target.'cfg(windows)'.dependencies]
 # Langue de Windows (choix « Langue du système »).
 windows-sys = { version = "0.59", features = ["Win32_Globalization"] }
+# Fenêtre « Ouvrir » de Windows (envoi de fichiers vers le serveur).
+rfd = "0.15"
