@@ -19,6 +19,7 @@ macro_rules! emojis {
 
 emojis! {
     Folder = "1f4c1",
+    Home = "1f3e0",
     Image = "1f5bc",
     Video = "1f3ac",
     Audio = "1f3b5",
@@ -35,7 +36,6 @@ emojis! {
     Database = "1f5c4",
     Web = "1f310",
     Disc = "1f4bf",
-    Star = "2b50",
     Backup = "1f4be",
     Share = "1f5c2",
     Computer = "1f5a5",

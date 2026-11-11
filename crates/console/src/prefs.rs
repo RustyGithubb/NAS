@@ -25,6 +25,22 @@ pub struct Prefs {
     pub files_gallery: bool,
     /// Onglet Fichiers : dossiers favoris.
     pub favorites: Vec<Favorite>,
+    /// Onglet Fichiers : onglets d'explorateur ouverts, et celui au premier plan.
+    pub files_tabs: Vec<Place>,
+    pub files_active: usize,
+    /// Onglet Fichiers : volet Détails affiché.
+    pub files_details: bool,
+}
+
+/// Ce qu'affiche un onglet de l'explorateur.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Place {
+    /// Accès rapide et fichiers récents.
+    Home,
+    /// Toutes les images et vidéos du serveur.
+    Gallery,
+    /// Un dossier : emplacement et chemin dans cet emplacement.
+    Folder { root: String, path: String },
 }
 
 /// Dossier favori de l'onglet Fichiers.
@@ -44,6 +60,9 @@ impl Default for Prefs {
             fonts: FontPrefs::default(),
             files_gallery: false,
             favorites: Vec::new(),
+            files_tabs: vec![Place::Home],
+            files_active: 0,
+            files_details: true,
         }
     }
 }

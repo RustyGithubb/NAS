@@ -2,6 +2,7 @@
 
 ## Non publié
 ### Ajouts
+- Fichiers façon Explorateur Windows : onglets (Ctrl+T / Ctrl+W, clic du milieu), barre d'adresse avec recherche dans le dossier, barre de commandes (Nouveau, couper, copier, coller, renommer, supprimer, Trier, Afficher, Détails), volet Accueil / Galerie / épinglés / emplacements, page Accueil (accès rapide, fichiers récents), page Galerie, volet Détails ; menus clic droit sans raccourcis. Protocole v9.
 - Journaux : vue « Tout le système » par défaut, comme `journalctl -f` dans un terminal (invite, heure, machine, programme en couleur, erreurs en rouge, avertissements en jaune) ; services à surveiller toujours visibles, tous les services dans un menu dépliable. Protocole v8.
 - Mise à jour automatique de l'agent depuis GitHub (chaque nuit, seulement si la CI est verte, retour à l'ancienne version si la nouvelle ne démarre pas) et bouton « Rechercher » dans Réglages › Serveur. Protocole v7.
 - `deploy/` : services systemd (démarrage de l'agent, mise à jour nocturne, rallumage du Mac mini après une coupure de courant) et `install.sh`.

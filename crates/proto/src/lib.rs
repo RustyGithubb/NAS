@@ -13,6 +13,7 @@
 //! - `GET  /api/files/roots` → `Vec<`[`Root`]`>`
 //! - `GET  /api/files/list?root=&path=` → [`Listing`]
 //! - `GET  /api/files/search?q=` → [`SearchResult`]
+//! - `GET  /api/files/recent` → [`SearchResult`] : fichiers modifiés le plus récemment
 //! - `POST /api/files/<mkdir|rename|delete|copy|move>?…` → [`ActionResult`] (voir [`FileOp`])
 //! - `GET  /api/files/download?root=&path=` → contenu du fichier
 //! - `POST /api/files/upload?root=&path=` (corps = contenu) → [`ActionResult`]
@@ -22,7 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 8;
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;

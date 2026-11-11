@@ -86,6 +86,17 @@ impl Index {
     }
 }
 
+impl Index {
+    /// Fichiers (pas les dossiers) modifiés le plus récemment, du plus récent au plus ancien.
+    pub fn recent(&self, n: usize) -> SearchResult {
+        let Ok(items) = self.items.read() else { return SearchResult::default() };
+        let mut files: Vec<&Item> = items.iter().filter(|it| !it.entry.is_dir).collect();
+        files.sort_by_key(|it| std::cmp::Reverse(it.entry.modified_ms));
+        let hits = files.iter().take(n).map(|it| Hit { root: self.roots[it.root].name.clone(), path: it.path.clone(), entry: it.entry.clone() }).collect();
+        SearchResult { hits, truncated: files.len() > n, indexed: items.len() }
+    }
+}
+
 fn walk(dir: &Path, rel: &str, root: usize, out: &mut Vec<Item>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {

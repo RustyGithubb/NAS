@@ -76,6 +76,8 @@ pub struct FilesData {
     pub loading: bool,
     /// Dernière recherche : requête et résultat.
     pub search: Option<(String, Result<SearchResult, String>)>,
+    /// Fichiers modifiés récemment (page Accueil).
+    pub recent: Option<Result<SearchResult, String>>,
     /// Résultat de la dernière opération (réussie ?, message).
     pub last: Option<(bool, String)>,
     pub transfers: Vec<Transfer>,
@@ -313,6 +315,11 @@ impl Server {
         let q = q.to_string();
         let url = format!("/api/files/search?q={}", urlencoding::encode(&q));
         self.spawn_files(move |a, _, to| get::<SearchResult>(a, to, &url), move |f, r| f.search = Some((q, r)));
+    }
+
+    /// Fichiers modifiés récemment, pour la page Accueil.
+    pub fn files_recent(&self) {
+        self.spawn_files(|a, _, to| get::<SearchResult>(a, to, "/api/files/recent"), |f, r| f.recent = Some(r));
     }
 
     /// Opération sur un élément, puis rafraîchit le dossier affiché.

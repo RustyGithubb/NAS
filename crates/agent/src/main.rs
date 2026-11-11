@@ -20,6 +20,9 @@ use nas_proto::FileOp;
 use nas_proto::{Action, ActionResult, Services, SiteAction, Sites, Status};
 use serde::Serialize;
 
+/// Nombre de fichiers récents (page Accueil de l'explorateur).
+const RECENT: usize = 20;
+
 /// Réponse : code HTTP et corps JSON.
 type Reply = (u16, String);
 
@@ -179,6 +182,7 @@ fn route(method: &tiny_http::Method, url: &str, ctx: &Ctx) -> Reply {
             },
             None => error(400, "paramètres manquants"),
         },
+        (Get, ["api", "files", "recent"]) => json(200, &ctx.files.index.recent(RECENT)),
         (Get, ["api", "files", "search"]) => json(200, &ctx.files.index.search(&param(query, "q").unwrap_or_default())),
         (Post, ["api", "files", verb]) => {
             let Some(op) = FileOp::from_verb(verb) else { return error(400, "action inconnue") };
