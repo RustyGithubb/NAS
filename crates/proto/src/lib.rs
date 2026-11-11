@@ -19,7 +19,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;
@@ -71,8 +71,12 @@ pub struct Disk {
     pub mount: String,
     /// Système de fichiers (« ext4 », « NTFS »).
     pub fs: String,
+    /// Espace réellement occupé par les fichiers (comme la colonne « Utilisé » de `df`).
     pub used: u64,
     pub total: u64,
+    /// Espace encore utilisable. Sous Linux, plus petit que `total - used` : une petite part
+    /// du disque est réservée à l'administrateur.
+    pub available: u64,
 }
 
 /// Liste des services (unités systemd).

@@ -2,6 +2,7 @@
 
 ## Non publié
 ### Ajouts
+- Tableau de bord : espace disque comme `df` sous Linux (utilisé sans la réserve de l'administrateur, et espace disponible). Protocole v5 : mettre à jour l'agent et la console ensemble.
 - Squelette du projet : console (Windows), agent (serveur) et données partagées.
 - Console : fenêtre sans cadre, barre latérale flottante (Tableau de bord, Services, Journaux, Fichiers, Réglages), 12 thèmes, français / anglais.
 - Agent : envoie l'état de la machine (processeur, mémoire, disques, température, durée de fonctionnement).

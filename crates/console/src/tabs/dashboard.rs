@@ -86,7 +86,7 @@ pub fn show(ui: &mut egui::Ui, link: &Link, addr: &str) {
                 for (i, d) in s.disks.iter().enumerate() {
                     let (cell, _) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::hover());
                     let label = format!("{}  ({})", d.mount, d.fs);
-                    let text = tf!("{} / {}  ·  {} libres", "{} / {}  ·  {} free", bytes(d.used), bytes(d.total), bytes(d.total.saturating_sub(d.used)));
+                    let text = tf!("{} / {}  ·  {} disponibles", "{} / {}  ·  {} available", bytes(d.used), bytes(d.total), bytes(d.available));
                     gauge_row(ui, cell, ("disk", i), &label, 220.0, pct(d.used, d.total), &text, 240.0);
                 }
             });
