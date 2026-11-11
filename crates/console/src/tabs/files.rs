@@ -1039,8 +1039,27 @@ fn side(ui: &mut egui::Ui, st: &mut State, prefs: &Prefs, roots: &[nas_proto::Ro
     // Lignes serrées, comme le volet de navigation de l'Explorateur.
     ui.spacing_mut().item_spacing.y = 0.0;
     let mut hl = Liquid::begin(ui, ("files_nav", st.uid));
+    // Groupe « NAS » : Accueil, puis les emplacements du serveur sous des noms parlants
+    // (Médias → Galerie, Partage → Fichiers) ; un emplacement inconnu garde son nom.
+    nav_group(ui, "NAS");
     nav_place(ui, &mut hl, here, todo, t!("Accueil", "Home"), Place::Home, Emoji::Home, false);
-    nav_place(ui, &mut hl, here, todo, t!("Galerie", "Gallery"), Place::Gallery, Emoji::Image, false);
+    let mut ordered: Vec<&nas_proto::Root> = roots.iter().collect();
+    ordered.sort_by_key(|r| root_rank(&r.name));
+    for r in ordered {
+        let place = Place::Folder { root: r.name.clone(), path: String::new() };
+        let label = root_label(&r.name);
+        let resp = nav_place(ui, &mut hl, here, todo, &label, place.clone(), icons::for_root(&r.name), false).on_hover_text(&r.name);
+        resp.context_menu(|ui| {
+            if ui.button(t!("Ouvrir dans un nouvel onglet", "Open in new tab")).clicked() {
+                todo.push(Do::NewTab(place.clone()));
+                ui.close();
+            }
+            if ui.button(t!("Épingler", "Pin")).clicked() {
+                todo.push(Do::Favorite(r.name.clone(), String::new()));
+                ui.close();
+            }
+        });
+    }
     nav_sep(ui);
     if prefs.favorites.is_empty() {
         ui.label(RichText::new(t!("Clic droit sur un dossier › Épingler", "Right-click a folder › Pin")).small().color(theme::TEXT_FAINT()));
@@ -1058,21 +1077,6 @@ fn side(ui: &mut egui::Ui, st: &mut State, prefs: &Prefs, roots: &[nas_proto::Ro
             }
             if ui.button(t!("Désépingler", "Unpin")).clicked() {
                 todo.push(Do::Unfavorite(i));
-                ui.close();
-            }
-        });
-    }
-    nav_sep(ui);
-    for r in roots {
-        let place = Place::Folder { root: r.name.clone(), path: String::new() };
-        let resp = nav_place(ui, &mut hl, here, todo, &r.name, place.clone(), icons::for_root(&r.name), false);
-        resp.context_menu(|ui| {
-            if ui.button(t!("Ouvrir dans un nouvel onglet", "Open in new tab")).clicked() {
-                todo.push(Do::NewTab(place.clone()));
-                ui.close();
-            }
-            if ui.button(t!("Épingler", "Pin")).clicked() {
-                todo.push(Do::Favorite(r.name.clone(), String::new()));
                 ui.close();
             }
         });
@@ -1135,6 +1139,36 @@ fn nav_place(ui: &mut egui::Ui, hl: &mut Liquid, here: Option<&Place>, todo: &mu
         }
     }
     r
+}
+
+/// Nom d'un emplacement du serveur dans le groupe « NAS ».
+fn root_label(name: &str) -> String {
+    match root_rank(name) {
+        0 => t!("Galerie", "Gallery").into(),
+        1 => t!("Fichiers", "Files").into(),
+        _ => name.to_string(),
+    }
+}
+
+/// Ordre dans le groupe « NAS » : Médias (Galerie), Partage (Fichiers), Sauvegardes, puis les autres.
+fn root_rank(name: &str) -> u8 {
+    let n = name.to_lowercase();
+    if n.contains("média") || n.contains("media") {
+        0
+    } else if n.contains("partage") || n.contains("share") {
+        1
+    } else if n.contains("sauvegarde") || n.contains("backup") {
+        2
+    } else {
+        3
+    }
+}
+
+/// Intitulé d'un groupe du volet de navigation (« NAS »).
+fn nav_group(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(2.0);
+    ui.label(RichText::new(text).small().strong().color(theme::TEXT_FAINT()));
+    ui.add_space(4.0);
 }
 
 fn nav_sep(ui: &mut egui::Ui) {

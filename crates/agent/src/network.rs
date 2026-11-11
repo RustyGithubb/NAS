@@ -264,8 +264,11 @@ fn disconnects(iface: &str) -> (u32, Option<(i64, String)>, Option<i64>) {
 fn parse_journal(text: &str, iface: &str) -> (u32, Option<(i64, String)>, Option<i64>) {
     let dev = format!("device ({iface}): supplicant interface state:");
     let (mut n, mut last, mut since) = (0u32, None::<(i64, String)>, None);
-    // Raison donnée par wpa_supplicant, juste avant ou juste après la ligne de NetworkManager.
-    let mut reason_at: Option<(i64, String)> = None;
+    // Coupure précédente, remise en place si la dernière s'avère volontaire.
+    let mut before: Option<(i64, String)> = None;
+    // Raison donnée par wpa_supplicant (juste avant ou juste après la ligne de NetworkManager),
+    // et départ volontaire du Mac (changement de réglage, reconnexion demandée) ou non.
+    let mut reason_at: Option<(i64, String, bool)> = None;
     let near = |a: i64, b: i64| (a - b).abs() <= 5000;
     for line in text.lines() {
         let ms = line.split_whitespace().next().and_then(|t| t.parse::<f64>().ok()).map(|t| (t * 1000.0) as i64).unwrap_or(0);
@@ -273,25 +276,38 @@ fn parse_journal(text: &str, iface: &str) -> (u32, Option<(i64, String)>, Option
             let rest = rest.trim();
             // Décroché après avoir été connecté (pas un essai de connexion qui échoue).
             if rest.ends_with("-> disconnected") && (rest.starts_with("completed") || rest.starts_with("associated") || rest.contains("handshake")) {
-                n += 1;
-                let why = match &reason_at {
-                    Some((t, w)) if near(*t, ms) => w.clone(),
-                    _ => "raison inconnue".into(),
-                };
-                last = Some((ms, why));
+                match &reason_at {
+                    // Le Mac est parti de lui-même : pas une coupure.
+                    Some((t, _, true)) if near(*t, ms) => {}
+                    Some((t, w, false)) if near(*t, ms) => {
+                        n += 1;
+                        before = last.replace((ms, w.clone()));
+                    }
+                    _ => {
+                        n += 1;
+                        before = last.replace((ms, "raison inconnue".into()));
+                    }
+                }
             } else if rest.ends_with("-> completed") {
                 since = Some(ms);
             }
         } else if line.contains(&format!("{iface}: CTRL-EVENT-DISCONNECTED"))
             && let Some(code) = line.split("reason=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|c| c.parse::<u16>().ok())
         {
-            let why = reason(code, line.contains("locally_generated=1"));
-            if let Some((t, w)) = last.as_mut()
-                && near(*t, ms)
-            {
-                *w = why.clone();
+            let local = line.contains("locally_generated=1");
+            // Code 3 venant du Mac : il a quitté le réseau exprès.
+            let voluntary = code == 3 && local;
+            let why = reason(code, local);
+            if last.as_ref().is_some_and(|(t, _)| near(*t, ms)) {
+                if voluntary {
+                    // Comptée juste avant par erreur : on l'annule.
+                    n = n.saturating_sub(1);
+                    last = before.take();
+                } else if let Some((_, w)) = last.as_mut() {
+                    *w = why.clone();
+                }
             }
-            reason_at = Some((ms, why));
+            reason_at = Some((ms, why, voluntary));
         }
     }
     // Reconnecté depuis la dernière coupure ?
@@ -401,6 +417,14 @@ mod tests {
         assert_eq!(at, 1794407336210);
         assert!(why.contains("code 4"), "{why}");
         assert_eq!(since, None);
+        // Départ volontaire du Mac (réglage changé) : pas compté.
+        let text = "\
+1794407336.20 nas wpa_supplicant[2]: wlp2s0: CTRL-EVENT-DISCONNECTED bssid=a0:2d:13:e7:63:01 reason=3 locally_generated=1
+1794407336.21 nas NetworkManager[1]: <info> device (wlp2s0): supplicant interface state: completed -> disconnected
+1794407340.00 nas NetworkManager[1]: <info> device (wlp2s0): supplicant interface state: associating -> completed
+";
+        let (n, last, since) = parse_journal(text, "wlp2s0");
+        assert_eq!((n, last, since), (0, None, Some(1794407340000)));
     }
 
     #[test]
