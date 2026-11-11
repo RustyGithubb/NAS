@@ -6,11 +6,12 @@ use eframe::egui::{self, RichText};
 use super::{header, row, separator};
 use crate::liquid::Liquid;
 use crate::prefs::{Animation, Curve, Prefs};
-use crate::server::Link;
+use crate::server::{Link, Server};
 use crate::{theme, widgets};
+use nas_proto::UpdateState;
 
 /// `key` : clé d'accès de l'agent (enregistrée à part, dans le coffre du système).
-pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link) {
+pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link, srv: &Server) {
     let badge = match link {
         Link::Online(s) => tf!("Connecté à {}", "Connected to {}", s.hostname),
         _ => String::new(),
@@ -20,7 +21,7 @@ pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: O
         let width = ui.available_width().min(760.0);
         ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
             general(ui, prefs);
-            server(ui, prefs, key, key_error, link);
+            server(ui, prefs, key, key_error, link, srv);
             themes(ui, prefs);
             fonts(ui, prefs);
             animations(ui, prefs);
@@ -29,8 +30,8 @@ pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: O
     });
 }
 
-/// Serveur : adresse de l'agent, clé d'accès, état de la liaison.
-fn server(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link) {
+/// Serveur : adresse de l'agent, clé d'accès, état de la liaison, mises à jour de l'agent.
+fn server(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link, srv: &Server) {
     widgets::card(ui, t!("Serveur", "Server"), 0.0, |ui| {
         row(ui, t!("Adresse de l'agent", "Agent address"), t!("IP:port de la machine qui fait tourner l'agent", "IP:port of the machine running the agent"), |ui| {
             ui.add(egui::TextEdit::singleline(&mut prefs.agent_addr).desired_width(240.0).font(egui::TextStyle::Monospace));
@@ -60,8 +61,57 @@ fn server(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Opt
             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, dot);
         });
+        if matches!(link, Link::Online(_)) {
+            separator(ui);
+            update_row(ui, srv);
+        }
     });
     ui.add_space(12.0);
+}
+
+/// Mises à jour de l'agent : vérifiées chaque nuit sur GitHub par le serveur, ou à la demande.
+fn update_row(ui: &mut egui::Ui, srv: &Server) {
+    srv.poll_update();
+    let update = srv.data().update.clone();
+    let running = matches!(&update, Some(Ok(u)) if u.state == UpdateState::Running);
+    row(ui, t!("Mises à jour de l'agent", "Agent updates"), t!("Vérifiées chaque nuit sur GitHub", "Checked every night on GitHub"), |ui| {
+        if ui
+            .add_enabled(!running, egui::Button::new(t!("Rechercher", "Check now")))
+            .on_hover_text(t!("Chercher une nouvelle version sur GitHub et l'installer", "Look for a new version on GitHub and install it"))
+            .clicked()
+        {
+            srv.check_update();
+        }
+        match &update {
+            None => {
+                ui.spinner();
+            }
+            Some(Err(e)) => {
+                ui.add(egui::Label::new(RichText::new(e).color(theme::DANGER())).truncate());
+            }
+            Some(Ok(u)) => {
+                let mut text = u.message.clone();
+                if !u.commit.is_empty() && u.state != UpdateState::Running {
+                    text.push_str(&format!("  ·  {}", u.commit));
+                }
+                if u.checked_ms > 0
+                    && u.state != UpdateState::Running
+                    && let Some(d) = chrono::DateTime::from_timestamp_millis(u.checked_ms)
+                {
+                    text.push_str(&format!("  ·  {}", d.with_timezone(&chrono::Local).format("%d/%m %H:%M")));
+                }
+                let color = match u.state {
+                    UpdateState::Failed => theme::DANGER(),
+                    UpdateState::Updated => theme::TEXT(),
+                    _ => theme::TEXT_MUTED(),
+                };
+                ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
+                if running {
+                    ui.spinner();
+                }
+            }
+        }
+    });
 }
 
 /// Langue de l'interface, onglet au démarrage et mises à jour.

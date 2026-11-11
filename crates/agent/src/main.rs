@@ -11,6 +11,7 @@ mod files;
 mod key;
 mod sampler;
 mod sites;
+mod update;
 
 use std::sync::{Arc, Mutex};
 
@@ -64,7 +65,8 @@ fn main() {
     let file = key::path();
     println!("Clé d'accès : {} (affichable avec --show-key)", file.canonicalize().unwrap_or(file).display());
 
-    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new() });
+    let updater = update::Updater::new(backend.simulated());
+    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new(), updater });
     // Une demande = un fil : un gros transfert de fichier ne bloque pas le reste.
     for request in server.incoming_requests() {
         let ctx = ctx.clone();
@@ -79,6 +81,7 @@ struct Ctx {
     backend: Box<dyn backend::Backend>,
     sites: Box<dyn sites::SitesBackend>,
     files: files::Files,
+    updater: update::Updater,
 }
 
 fn handle(ctx: &Ctx, mut request: tiny_http::Request) {
@@ -159,6 +162,11 @@ fn route(method: &tiny_http::Method, url: &str, ctx: &Ctx) -> Reply {
                 Err(message) => json(200, &ActionResult { ok: false, message }),
             }
         }
+        (Get, ["api", "update"]) => json(200, &ctx.updater.status()),
+        (Post, ["api", "update"]) => match ctx.updater.start() {
+            Ok(()) => json(200, &ActionResult { ok: true, message: String::new() }),
+            Err(message) => json(200, &ActionResult { ok: false, message }),
+        },
         (Get, ["api", "files", "roots"]) => json(200, &ctx.files.roots_info()),
         (Get, ["api", "files", "list"]) => match param(query, "root") {
             Some(root) => match ctx.files.list(&root, &param(query, "path").unwrap_or_default()) {

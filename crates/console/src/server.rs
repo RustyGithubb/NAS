@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use nas_proto::{Action, ActionResult, FileOp, Listing, LogEntry, Logs, Root, SearchResult, Services, SiteAction, Sites, Status};
+use nas_proto::{Action, ActionResult, FileOp, Listing, LogEntry, Logs, Root, SearchResult, Services, SiteAction, Sites, Status, UpdateState, UpdateStatus};
 
 /// Intervalle entre deux demandes d'état.
 const PERIOD: Duration = Duration::from_secs(2);
@@ -59,6 +59,10 @@ pub struct Shared {
     pub last_action: Option<(String, Action, ActionResult)>,
     pub logs: LogView,
     pub files: FilesData,
+    /// Mise à jour de l'agent (Réglages) : dernier état connu, ou erreur.
+    pub update: Option<Result<UpdateStatus, String>>,
+    update_polled: Option<Instant>,
+    update_in_flight: bool,
 }
 
 /// Onglet Fichiers : emplacements, dossier affiché, recherche, transferts.
@@ -414,6 +418,56 @@ impl Server {
         std::thread::spawn(move || {
             me.files_list(&root, &path);
             me.files_roots();
+        });
+    }
+
+    /// À appeler à chaque image par les Réglages : redemande l'état des mises à jour de l'agent,
+    /// toutes les 2 s pendant une recherche (ou si l'agent redémarre), sinon toutes les 30 s.
+    pub fn poll_update(&self) {
+        let to = {
+            let mut s = self.data();
+            let busy = matches!(&s.update, Some(Ok(u)) if u.state == UpdateState::Running) || matches!(s.update, Some(Err(_)));
+            let every = if busy { Duration::from_secs(2) } else { Duration::from_secs(30) };
+            self.ctx.request_repaint_after(every);
+            if s.update_in_flight || s.update_polled.is_some_and(|t| t.elapsed() < every) {
+                return;
+            }
+            s.update_in_flight = true;
+            s.update_polled = Some(Instant::now());
+            Target::of(&s)
+        };
+        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let r = get::<UpdateStatus>(&agent, &to, "/api/update");
+            let mut s = lock(&shared);
+            s.update_in_flight = false;
+            if to.current(&s) {
+                s.update = Some(r);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Lance une recherche de mise à jour de l'agent ; l'avancement arrive par `poll_update`.
+    pub fn check_update(&self) {
+        let to = Target::of(&self.data());
+        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let r = match to.request(&agent, "POST", "/api/update").call() {
+                Ok(r) => r.into_json::<ActionResult>().unwrap_or_else(|e| ActionResult { ok: false, message: e.to_string() }),
+                Err(e) => ActionResult { ok: false, message: describe(e) },
+            };
+            let mut s = lock(&shared);
+            if to.current(&s) {
+                s.update = Some(if r.ok {
+                    let prev = s.update.take().and_then(Result::ok).unwrap_or_default();
+                    Ok(UpdateStatus { state: UpdateState::Running, message: t!("Recherche de mise à jour…", "Looking for an update…").into(), ..prev })
+                } else {
+                    Err(r.message)
+                });
+                s.update_polled = Some(Instant::now());
+            }
+            ctx.request_repaint();
         });
     }
 

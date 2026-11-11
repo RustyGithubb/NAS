@@ -1,0 +1,15 @@
+# Agent NAS : démarre avec le Mac mini et redémarre tout seul s'il plante.
+[Unit]
+Description=Agent NAS (pilotage depuis la console)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# 0.0.0.0 : accepte les connexions du réseau local (la clé d'accès protège chaque demande).
+Environment=NAS_AGENT_ADDR=0.0.0.0:7878
+ExecStart=/usr/local/bin/nas-agent
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

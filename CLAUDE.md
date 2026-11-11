@@ -50,15 +50,23 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - files/ : emplacements (`NAS_AGENT_ROOTS="Nom=chemin;…"`), opérations (corbeille `.corbeille`), index.rs = index en mémoire façon Everything (refait toutes les 5 min ou après une modification)
 - sites/ : sites web — caddy.rs (fichier par site dans /etc/caddy/sites, sauvegardes tar + mysqldump), mock.rs
 - sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
+- update.rs : recherche de mise à jour (lance le service `nas-agent-update`, lit /var/lib/nas-agent/update.json)
 - Routes et types JSON : `crates/proto/src/lib.rs`
 
+## Serveur (deploy/)
+- `install.sh` (sudo) : services systemd de l'agent, mise à jour nocturne, rallumage après coupure
+- `nas-agent-update.sh` : fetch GitHub → attend la CI verte → compile → installe → relance (ancienne version remise si échec)
+- Mac mini sans ventilateur (connecteur arraché) : processeur bridé (turbo coupé, 60 %), voir docs/installer-le-serveur.md
+
 ## Docs
+- `docs/installer-le-serveur.md` : Debian sur le Mac mini, Wi-Fi Broadcom, bridage thermique, agent, mises à jour
 - `docs/heberger-un-site.md` : mise en place serveur (Caddy, PHP, MariaDB, médias partagés, migration OVH)
 
 ## Étapes du projet
 1. Squelette (fait).
 2. Console : thème, barre latérale, barre de titre, onglets vides (fait).
 3. Agent (mesures réelles via sysinfo) + tableau de bord de la console (fait).
-4. Contrôle des services, journaux en direct (fait ; backend systemd pas encore testé sur une vraie machine).
+4. Contrôle des services, journaux en direct (fait, testé sur le Mac mini).
 5. Clé d'accès entre console et agent (fait). Le chiffrement du trafic viendra de WireGuard.
 6. Onglet Sites (fait, simulé) ; onglet Fichiers (fait) ; à faire : vignettes d'images en galerie, restauration de la corbeille, page de liens temporaire, migration du WordPress OVH.
+7. Mac mini sous Debian 13 en Wi-Fi, agent installé (fait) ; mise à jour automatique depuis GitHub et rallumage après coupure (deploy/, à installer).

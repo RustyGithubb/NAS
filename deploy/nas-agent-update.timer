@@ -1,0 +1,12 @@
+# Réveil de la mise à jour : chaque nuit vers 4 h (à un moment un peu aléatoire), et au
+# démarrage si le Mac était éteint à l'heure prévue.
+[Unit]
+Description=Recherche nocturne de mise à jour de l'agent NAS
+
+[Timer]
+OnCalendar=*-*-* 04:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

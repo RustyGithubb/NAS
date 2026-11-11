@@ -7,6 +7,8 @@
 //! - `GET  /api/logs/<unité>?after=<curseur>` → [`Logs`] (curseur encodé pour l'URL)
 //! - `GET  /api/sites` → [`Sites`]
 //! - `POST /api/sites/<nom>/<online|maintenance|offline|backup>` → [`ActionResult`]
+//! - `GET  /api/update` → [`UpdateStatus`]
+//! - `POST /api/update` → [`ActionResult`] (lance une recherche de mise à jour de l'agent)
 //! - `GET  /api/files/roots` → `Vec<`[`Root`]`>`
 //! - `GET  /api/files/list?root=&path=` → [`Listing`]
 //! - `GET  /api/files/search?q=` → [`SearchResult`]
@@ -19,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;
@@ -389,4 +391,40 @@ mod tests {
         assert_eq!(Action::from_verb("restart"), Some(Action::Restart));
         assert_eq!(Action::from_verb("kill"), None);
     }
+}
+
+/// Où en est la mise à jour automatique de l'agent (script `deploy/nas-agent-update.sh`, lancé
+/// chaque nuit ou depuis la console).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateState {
+    /// Aucune recherche faite pour l'instant.
+    #[default]
+    Never,
+    /// Recherche ou mise à jour en cours.
+    Running,
+    /// Déjà à jour.
+    UpToDate,
+    /// Nouvelle version sur GitHub, mais ses vérifications (CI) ne sont pas terminées.
+    Waiting,
+    /// Mis à jour lors de la dernière recherche.
+    Updated,
+    /// Échec (GitHub injoignable, CI en échec, compilation ratée…) : ancienne version gardée.
+    Failed,
+    /// Mise à jour automatique pas installée sur le serveur (`deploy/install.sh`).
+    NotInstalled,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct UpdateStatus {
+    pub state: UpdateState,
+    /// Explication en une phrase, écrite par le script.
+    #[serde(default)]
+    pub message: String,
+    /// Version (commit Git abrégé) en service.
+    #[serde(default)]
+    pub commit: String,
+    /// Date de la dernière recherche (ms depuis 1970).
+    #[serde(default)]
+    pub checked_ms: i64,
 }

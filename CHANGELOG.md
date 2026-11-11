@@ -2,6 +2,8 @@
 
 ## Non publié
 ### Ajouts
+- Mise à jour automatique de l'agent depuis GitHub (chaque nuit, seulement si la CI est verte, retour à l'ancienne version si la nouvelle ne démarre pas) et bouton « Rechercher » dans Réglages › Serveur. Protocole v7.
+- `deploy/` : services systemd (démarrage de l'agent, mise à jour nocturne, rallumage du Mac mini après une coupure de courant) et `install.sh`.
 - Problèmes en rouge partout : services en échec ou arrêtés alors qu'ils démarrent avec le système (filtre « Problèmes »), tuiles et jauges du tableau de bord au-delà de 90 % (ou 85 °C), sites coupés, erreurs. Les tâches ponctuelles arrêtées restent grises. Protocole v6.
 - Tableau de bord : espace disque comme `df` sous Linux (utilisé sans la réserve de l'administrateur, et espace disponible). Protocole v5 : mettre à jour l'agent et la console ensemble.
 - Squelette du projet : console (Windows), agent (serveur) et données partagées.

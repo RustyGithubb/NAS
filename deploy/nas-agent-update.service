@@ -1,0 +1,13 @@
+# Mise à jour de l'agent depuis GitHub (voir nas-agent-update.sh). Lancé chaque nuit par
+# nas-agent-update.timer, ou depuis la console (Réglages › Serveur › Rechercher).
+[Unit]
+Description=Mise à jour de l'agent NAS depuis GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nas-agent-update
+# Compilation en douceur : le processeur est bridé et sans ventilateur.
+Nice=15
+IOSchedulingClass=idle

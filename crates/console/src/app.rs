@@ -111,7 +111,7 @@ impl eframe::App for NasApp {
                 let addr = self.prefs.agent_addr.clone();
                 tabs::files::show(ui, &mut self.files, &self.server, &link, &addr, &mut self.prefs)
             }
-            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link),
+            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link, &self.server),
         });
         // « Journal » cliqué sur un service : ouvre son journal.
         if let Some(unit) = open_logs {

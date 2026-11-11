@@ -1,0 +1,13 @@
+# Rallume le Mac mini tout seul quand le courant revient après une coupure.
+# Puce Intel du Mac (contrôleur LPC 00:1f.0), registre GEN_PMCON_3 (0xa4), bit 0 AFTERG3_EN :
+# à 0, la machine démarre dès que le courant revient. « 0:1 » = mettre 0 sur ce seul bit.
+# Réappliqué à chaque démarrage par sécurité.
+[Unit]
+Description=Rallumage automatique après une coupure de courant (Mac mini)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/setpci -s 00:1f.0 0xa4.b=0:1
+
+[Install]
+WantedBy=multi-user.target
