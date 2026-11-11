@@ -55,13 +55,15 @@ fn server(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Opt
             Link::Online(s) => (theme::TEXT(), tf!("Connecté à {}", "Connected to {}", s.hostname)),
             Link::Offline(e) => (theme::DANGER(), tf!("Hors ligne : {e}", "Offline: {e}")),
             Link::Denied => (theme::DANGER(), t!("Clé d'accès refusée", "Access key refused").to_string()),
+            Link::Mismatch(a, c) => (theme::DANGER(), tf!("Version incompatible (agent : {a}, console : {c})", "Incompatible version (agent: {a}, console: {c})")),
         };
         row(ui, t!("État", "Status"), t!("Liaison avec l'agent", "Link with the agent"), |ui| {
             ui.label(RichText::new(text).color(theme::TEXT_MUTED()));
             let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
             ui.painter().circle_filled(r.center(), 4.0, dot);
         });
-        if matches!(link, Link::Online(_)) {
+        // Agent d'une autre version : on peut quand même le mettre à jour d'ici.
+        if matches!(link, Link::Online(_) | Link::Mismatch(..)) {
             separator(ui);
             update_row(ui, srv);
         }

@@ -29,6 +29,9 @@ pub enum Link {
     Offline(String),
     /// Agent joignable, mais la clé d'accès est absente ou fausse.
     Denied,
+    /// Agent joignable, mais d'une autre version du protocole : versions (agent, console). Seule
+    /// sa mise à jour (Réglages › Serveur) reste possible.
+    Mismatch(u32, u32),
 }
 
 /// Journal affiché dans l'onglet Journaux.
@@ -982,12 +985,7 @@ fn fetch_status(agent: &ureq::Agent, to: &Target) -> Link {
         Err(e) => return Link::Offline(describe(e)),
     };
     if status.protocol != nas_proto::PROTOCOL_VERSION {
-        return Link::Offline(tf!(
-            "version incompatible (agent : {}, console : {})",
-            "incompatible version (agent: {}, console: {})",
-            status.protocol,
-            nas_proto::PROTOCOL_VERSION
-        ));
+        return Link::Mismatch(status.protocol, nas_proto::PROTOCOL_VERSION);
     }
     Link::Online(Box::new(status))
 }

@@ -8,6 +8,7 @@
 - Fichiers : un onglet tiré par son intitulé hors de la barre d'onglets s'ouvre seul dans sa fenêtre (barre de titre maison, épingle « toujours au premier plan ») ; la fermer le ramène dans l'explorateur. Chaque fenêtre affiche son propre dossier ; copier/coller marche d'une fenêtre à l'autre.
 - Fichiers : aperçu du fichier sélectionné dans le volet Détails à la place de l'icône (images png, jpg, gif, webp, bmp jusqu'à 25 Mo ; début des fichiers texte et de code, 64 Ko).
 ### Corrections
+- Console : un agent d'une autre version du protocole n'est plus traité comme hors ligne ; Réglages › Serveur garde le bouton « Rechercher » pour le mettre à jour, et les onglets expliquent quoi faire.
 - Fichiers : plus d'espace autour des séparateurs du volet de gauche ; boutons couper / copier / coller / renommer / supprimer retirés de la barre du haut (toujours au clic droit et au clavier).
 - Fichiers : glisser un élément d'un dossier du serveur à un autre le déplace (Ctrl : copie) au lieu de le dupliquer.
 - Fichiers : volet de navigation plus serré (lignes plus basses, sans espace entre elles).

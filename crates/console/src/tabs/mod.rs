@@ -59,6 +59,22 @@ pub fn unavailable(ui: &mut egui::Ui, overline: &str, title: &str, link: &Link, 
             });
             true
         }
+        Link::Mismatch(agent, console) => {
+            header(ui, overline, title, t!("Version incompatible", "Incompatible version"), true);
+            widgets::pane(ui, |ui| {
+                ui.add_space(40.0);
+                let detail = tf!("{addr} : agent en protocole {agent}, console en protocole {console}", "{addr}: agent on protocol {agent}, console on protocol {console}");
+                widgets::empty_state(ui, t!("Agent et console de versions différentes", "Agent and console versions differ"), &detail);
+                ui.add_space(12.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(t!("Mets l'agent à jour : Réglages › Serveur › Rechercher", "Update the agent: Settings › Server › Check now"))
+                            .color(theme::TEXT_MUTED()),
+                    );
+                });
+            });
+            true
+        }
         Link::Connecting => {
             header(ui, overline, title, t!("Connexion…", "Connecting…"), false);
             widgets::pane(ui, |ui| {
