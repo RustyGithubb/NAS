@@ -70,9 +70,13 @@ impl super::Backend for Systemd {
         run("systemctl", &[action.verb(), "--", unit]).map(|_| ())
     }
 
-    fn logs(&self, unit: &str, after: Option<&str>) -> Result<Logs, String> {
+    fn logs(&self, unit: Option<&str>, after: Option<&str>) -> Result<Logs, String> {
         let limit = nas_proto::LOG_LIMIT.to_string();
-        let mut args = vec!["-u", unit, "-o", "json", "--no-pager", "-n", &limit];
+        let mut args = vec!["-o", "json", "--no-pager", "-n", &limit];
+        // Sans service : tout le journal du système, comme `journalctl -f`.
+        if let Some(unit) = unit {
+            args.extend(["-u", unit]);
+        }
         let cursor_arg;
         if let Some(c) = after {
             cursor_arg = format!("--after-cursor={c}");
@@ -87,6 +91,7 @@ impl super::Backend for Systemd {
                 time_ms: text("__REALTIME_TIMESTAMP").and_then(|t| t.parse::<i64>().ok()).unwrap_or(0) / 1000,
                 priority: text("PRIORITY").and_then(|p| p.parse().ok()).unwrap_or(6),
                 message: message(v.get("MESSAGE")),
+                source: source(&v),
             });
             if let Some(c) = text("__CURSOR") {
                 logs.cursor = Some(c.to_string());
@@ -105,6 +110,16 @@ fn message(v: Option<&Value>) -> String {
     }
 }
 
+/// Auteur d'une ligne, comme l'affiche `journalctl` : « sshd[812] », « kernel ».
+fn source(v: &Value) -> String {
+    let text = |k: &str| v.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
+    let name = text("SYSLOG_IDENTIFIER").or_else(|| text("_COMM")).or_else(|| text("_SYSTEMD_UNIT")).unwrap_or("?");
+    match text("_PID").or_else(|| text("SYSLOG_PID")) {
+        Some(pid) => format!("{name}[{pid}]"),
+        None => name.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +130,14 @@ mod tests {
         assert_eq!(message(Some(&v)), "hi");
         assert_eq!(message(Some(&Value::String("ok".into()))), "ok");
         assert_eq!(message(None), "");
+    }
+
+    #[test]
+    fn sources() {
+        let v: Value = serde_json::from_str(r#"{"SYSLOG_IDENTIFIER":"sshd","_PID":"812"}"#).unwrap();
+        assert_eq!(source(&v), "sshd[812]");
+        let v: Value = serde_json::from_str(r#"{"SYSLOG_IDENTIFIER":"kernel"}"#).unwrap();
+        assert_eq!(source(&v), "kernel");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 ## Non publié
 ### Ajouts
+- Journaux : vue « Tout le système » par défaut, comme `journalctl -f` dans un terminal (invite, heure, machine, programme en couleur, erreurs en rouge, avertissements en jaune) ; services à surveiller toujours visibles, tous les services dans un menu dépliable. Protocole v8.
 - Mise à jour automatique de l'agent depuis GitHub (chaque nuit, seulement si la CI est verte, retour à l'ancienne version si la nouvelle ne démarre pas) et bouton « Rechercher » dans Réglages › Serveur. Protocole v7.
 - `deploy/` : services systemd (démarrage de l'agent, mise à jour nocturne, rallumage du Mac mini après une coupure de courant) et `install.sh`.
 - Problèmes en rouge partout : services en échec ou arrêtés alors qu'ils démarrent avec le système (filtre « Problèmes »), tuiles et jauges du tableau de bord au-delà de 90 % (ou 85 °C), sites coupés, erreurs. Les tâches ponctuelles arrêtées restent grises. Protocole v6.

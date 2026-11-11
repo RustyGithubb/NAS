@@ -4,7 +4,8 @@
 //! - `GET  /api/status` → [`Status`]
 //! - `GET  /api/services` → [`Services`]
 //! - `POST /api/services/<unité>/<start|stop|restart>` → [`ActionResult`]
-//! - `GET  /api/logs/<unité>?after=<curseur>` → [`Logs`] (curseur encodé pour l'URL)
+//! - `GET  /api/logs?after=<curseur>` → [`Logs`] du système entier (comme `journalctl -f`)
+//! - `GET  /api/logs/<unité>?after=<curseur>` → [`Logs`] d'un service (curseur encodé pour l'URL)
 //! - `GET  /api/sites` → [`Sites`]
 //! - `POST /api/sites/<nom>/<online|maintenance|offline|backup>` → [`ActionResult`]
 //! - `GET  /api/update` → [`UpdateStatus`]
@@ -21,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;
@@ -163,6 +164,9 @@ pub struct LogEntry {
     /// Gravité syslog : 0 = urgence … 3 = erreur, 4 = avertissement … 7 = débogage.
     pub priority: u8,
     pub message: String,
+    /// Programme qui a écrit la ligne, comme dans un terminal (« sshd[812] », « kernel »).
+    #[serde(default)]
+    pub source: String,
 }
 
 /// Sites web hébergés.

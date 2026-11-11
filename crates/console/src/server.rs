@@ -31,9 +31,10 @@ pub enum Link {
     Denied,
 }
 
-/// Journal du service affiché dans l'onglet Journaux.
+/// Journal affiché dans l'onglet Journaux.
 #[derive(Default)]
 pub struct LogView {
+    /// Service suivi ; `None` : tout le système.
     pub unit: Option<String>,
     pub entries: VecDeque<LogEntry>,
     cursor: Option<String>,
@@ -205,14 +206,14 @@ impl Server {
         });
     }
 
-    /// À appeler à chaque image par l'onglet Journaux : suit le journal de `unit`.
+    /// À appeler à chaque image par l'onglet Journaux : suit le journal de `unit` (du système entier si `None`).
     pub fn follow_logs(&self, unit: Option<&str>) {
         let job = {
             let mut s = self.data();
             if s.logs.unit.as_deref() != unit {
                 s.logs = LogView { unit: unit.map(str::to_string), ..Default::default() };
             }
-            let Some(unit) = s.logs.unit.clone() else { return };
+            let unit = s.logs.unit.clone();
             let due = s.logs.last.is_none_or(|t| t.elapsed() >= LOG_PERIOD);
             if s.logs.in_flight || !due {
                 return;
@@ -223,14 +224,18 @@ impl Server {
         let (to, unit, cursor) = job;
         let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
         std::thread::spawn(move || {
-            let mut path = format!("/api/logs/{}", urlencoding::encode(&unit));
+            // Sans service : journal de tout le système.
+            let mut path = match &unit {
+                Some(u) => format!("/api/logs/{}", urlencoding::encode(u)),
+                None => "/api/logs".to_string(),
+            };
             if let Some(c) = &cursor {
                 path.push_str(&format!("?after={}", urlencoding::encode(c)));
             }
             let result = get::<Logs>(&agent, &to, &path);
             let mut s = lock(&shared);
             // Autre service, adresse ou clé choisis entre-temps : résultat ignoré.
-            if !to.current(&s) || s.logs.unit.as_deref() != Some(&unit) {
+            if !to.current(&s) || s.logs.unit != unit {
                 return;
             }
             let view = &mut s.logs;

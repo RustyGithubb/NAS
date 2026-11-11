@@ -138,12 +138,16 @@ fn route(method: &tiny_http::Method, url: &str, ctx: &Ctx) -> Reply {
                 Err(message) => json(200, &ActionResult { ok: false, message }),
             }
         }
+        (Get, ["api", "logs"]) => match backend.logs(None, param(query, "after").as_deref()) {
+            Ok(logs) => json(200, &logs),
+            Err(e) => error(500, &e),
+        },
         (Get, ["api", "logs", unit]) => {
             if !nas_proto::valid_unit(unit) {
                 return error(400, "nom de service invalide");
             }
             let after = param(query, "after");
-            match backend.logs(unit, after.as_deref()) {
+            match backend.logs(Some(unit), after.as_deref()) {
                 Ok(logs) => json(200, &logs),
                 Err(e) => error(500, &e),
             }

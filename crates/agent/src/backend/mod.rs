@@ -11,8 +11,9 @@ pub trait Backend: Send + Sync {
     fn services(&self) -> Result<Vec<Service>, String>;
     /// Démarre, arrête ou redémarre `unit` (nom déjà vérifié par `valid_unit`).
     fn action(&self, unit: &str, action: Action) -> Result<(), String>;
-    /// Dernières lignes du journal de `unit`, ou celles qui suivent le curseur `after`.
-    fn logs(&self, unit: &str, after: Option<&str>) -> Result<Logs, String>;
+    /// Dernières lignes du journal de `unit` (du système entier si `None`), ou celles qui
+    /// suivent le curseur `after`.
+    fn logs(&self, unit: Option<&str>, after: Option<&str>) -> Result<Logs, String>;
 }
 
 /// systemd s'il est là (Linux démarré avec systemd), sinon simulation.
