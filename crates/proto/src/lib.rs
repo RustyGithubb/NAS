@@ -22,11 +22,15 @@
 //! - `POST /api/files/upload?root=&path=` (corps = contenu) → [`ActionResult`]
 //!
 //! Chemins de fichiers : toujours relatifs à un emplacement (`root`), séparés par `/`.
+//!
+//! Synchronisation des apps (`/sync/…` et `/api/sync/…`) : voir le module [`sync`].
 
 use serde::{Deserialize, Serialize};
 
+pub mod sync;
+
 /// Version du protocole : la console refuse un agent d'une autre version.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Port par défaut de l'agent.
 pub const DEFAULT_PORT: u16 = 7878;

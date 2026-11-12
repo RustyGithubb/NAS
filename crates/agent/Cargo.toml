@@ -16,6 +16,12 @@ serde_json = "1.0.154"
 sysinfo = "0.37"
 # Serveur HTTP minimal, sans moteur asynchrone : léger pour le Mac mini.
 tiny_http = "0.12"
+# Synchronisation des apps : base SQLite (compilée avec l'agent, rien à installer), hachage des
+# clés d'authentification, empreintes et contenu en base64.
+rusqlite = { version = "0.42", features = ["bundled"] }
+argon2 = "0.5"
+sha2 = "0.10"
+base64 = "0.22"
 # Décodage des paramètres d'URL (curseur de journal).
 urlencoding = "2.1.3"
 

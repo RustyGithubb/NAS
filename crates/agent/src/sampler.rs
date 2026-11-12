@@ -70,7 +70,7 @@ fn read(sys: &System, disks: &Disks, components: &Components) -> Status {
 /// sysinfo ne donne que le total et le disponible : leur différence compte aussi la réserve de
 /// l'administrateur (5 % par défaut en ext4, soit ~90 Go sur 2 To), pas de vrais fichiers.
 #[cfg(unix)]
-fn space(mount: &std::path::Path) -> Option<(u64, u64, u64)> {
+pub(crate) fn space(mount: &std::path::Path) -> Option<(u64, u64, u64)> {
     use std::os::unix::ffi::OsStrExt;
     let path = std::ffi::CString::new(mount.as_os_str().as_bytes()).ok()?;
     let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -86,6 +86,6 @@ fn space(mount: &std::path::Path) -> Option<(u64, u64, u64)> {
 
 /// Ailleurs (Windows, en développement), sysinfo suffit : pas de réserve.
 #[cfg(not(unix))]
-fn space(_: &std::path::Path) -> Option<(u64, u64, u64)> {
+pub(crate) fn space(_: &std::path::Path) -> Option<(u64, u64, u64)> {
     None
 }

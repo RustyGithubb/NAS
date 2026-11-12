@@ -71,6 +71,16 @@ pub struct Shared {
     pub network: Option<Result<Network, NetError>>,
     network_polled: Option<Instant>,
     network_in_flight: bool,
+    /// Synchronisation des apps (onglet Synchro) : dernier état reçu, ou erreur.
+    pub sync: Option<Result<nas_proto::sync::Overview, String>>,
+    sync_polled: Option<Instant>,
+    sync_in_flight: bool,
+    /// Action d'administration en cours.
+    pub sync_busy: bool,
+    /// Résultat de la dernière action (réussie ?, message).
+    pub sync_result: Option<(bool, String)>,
+    /// Code d'invitation à afficher (nouveau compte ou réinitialisation).
+    pub sync_invite: Option<nas_proto::sync::Invitation>,
 }
 
 /// Réseau illisible : agent trop ancien (route absente) ou autre erreur.
@@ -856,6 +866,97 @@ impl Server {
                     n.speedtest.state = nas_proto::SpeedState::Failed;
                     n.speedtest.message = r.message;
                 }
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// À appeler à chaque image par l'onglet Synchro : redemande l'état toutes les 3 s.
+    pub fn poll_sync(&self) {
+        let to = {
+            let mut s = self.data();
+            let every = Duration::from_secs(3);
+            self.ctx.request_repaint_after(every);
+            if s.sync_in_flight || s.sync_polled.is_some_and(|t| t.elapsed() < every) {
+                return;
+            }
+            s.sync_in_flight = true;
+            s.sync_polled = Some(Instant::now());
+            Target::of(&s)
+        };
+        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            let r = get::<nas_proto::sync::Overview>(&agent, &to, "/api/sync");
+            let mut s = lock(&shared);
+            s.sync_in_flight = false;
+            if to.current(&s) {
+                s.sync = Some(r);
+            }
+            ctx.request_repaint();
+        });
+    }
+
+    /// Action d'administration de la synchronisation (`/api/sync/…`, corps JSON facultatif).
+    /// Réussie : `done` s'affiche dans `sync_result` ; l'état est redemandé tout de suite.
+    pub fn sync_action(&self, path: &str, body: Option<serde_json::Value>, done: String) {
+        self.sync_post(path, body, move |r: ActionResult| (r.ok, if r.ok { done } else { r.message }), |_, _| {});
+    }
+
+    /// Création d'un compte ou nouvelle invitation : le code arrive dans `sync_invite`.
+    pub fn sync_invite(&self, path: &str, body: Option<serde_json::Value>) {
+        self.sync_post(
+            path,
+            body,
+            |r: nas_proto::sync::Invitation| (r.ok, r.message.clone()),
+            |s, r: nas_proto::sync::Invitation| {
+                if r.ok {
+                    s.sync_invite = Some(r);
+                    s.sync_result = None;
+                }
+            },
+        );
+    }
+
+    fn sync_post<T: serde::de::DeserializeOwned + Clone + Send + 'static>(
+        &self,
+        path: &str,
+        body: Option<serde_json::Value>,
+        outcome: impl FnOnce(T) -> (bool, String) + Send + 'static,
+        keep: impl FnOnce(&mut Shared, T) + Send + 'static,
+    ) {
+        let to = {
+            let mut s = self.data();
+            if s.sync_busy {
+                return;
+            }
+            s.sync_busy = true;
+            Target::of(&s)
+        };
+        let (shared, agent, ctx, path) = (self.shared.clone(), self.agent.clone(), self.ctx.clone(), path.to_string());
+        std::thread::spawn(move || {
+            let req = to.request(&agent, "POST", &path);
+            let sent = match body {
+                Some(b) => req.send_json(b),
+                None => req.call(),
+            };
+            let reply = match sent {
+                Ok(r) => r.into_json::<T>().map_err(|_| t!("réponse illisible", "unreadable response").to_string()),
+                Err(e) => Err(describe(e)),
+            };
+            let overview = get::<nas_proto::sync::Overview>(&agent, &to, "/api/sync");
+            let mut s = lock(&shared);
+            s.sync_busy = false;
+            if to.current(&s) {
+                match reply {
+                    Ok(v) => {
+                        let (ok, msg) = outcome(v.clone());
+                        s.sync_result = if ok && msg.is_empty() { None } else { Some((ok, msg)) };
+                        keep(&mut s, v);
+                    }
+                    Err(e) => s.sync_result = Some((false, e)),
+                }
+                s.sync = Some(overview);
+                s.sync_polled = Some(Instant::now());
             }
             ctx.request_repaint();
         });

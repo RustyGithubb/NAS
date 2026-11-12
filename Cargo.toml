@@ -1,7 +1,7 @@
 # NAS (nom provisoire) : console de pilotage du Mac mini (Windows) + agent installé sur le serveur (Linux).
 [workspace]
 resolver = "3"
-members = ["crates/console", "crates/agent", "crates/proto"]
+members = ["crates/console", "crates/agent", "crates/proto", "crates/sync-client"]
 
 [workspace.package]
 version = "0.1.0"

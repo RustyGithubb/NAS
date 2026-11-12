@@ -11,6 +11,7 @@ pub enum Tab {
     Dashboard,
     Services,
     Sites,
+    Sync,
     Logs,
     Files,
     Settings,
@@ -18,13 +19,14 @@ pub enum Tab {
 
 impl Tab {
     /// Onglets de la barre principale (Réglages a sa pilule en bas à gauche).
-    pub const ALL: [Tab; 5] = [Tab::Dashboard, Tab::Services, Tab::Sites, Tab::Logs, Tab::Files];
+    pub const ALL: [Tab; 6] = [Tab::Dashboard, Tab::Services, Tab::Sites, Tab::Sync, Tab::Logs, Tab::Files];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Dashboard => t!("Tableau de bord", "Dashboard"),
             Tab::Services => "Services",
             Tab::Sites => "Sites",
+            Tab::Sync => "Synchro",
             Tab::Logs => t!("Journaux", "Logs"),
             Tab::Files => t!("Fichiers", "Files"),
             Tab::Settings => t!("Réglages", "Settings"),
@@ -37,6 +39,7 @@ impl Tab {
             Tab::Dashboard => "dashboard",
             Tab::Services => "services",
             Tab::Sites => "sites",
+            Tab::Sync => "sync",
             Tab::Logs => "logs",
             Tab::Files => "files",
             Tab::Settings => "settings",
@@ -57,6 +60,7 @@ pub struct NasApp {
     key_error: Option<String>,
     services: tabs::services::State,
     sites: tabs::sites::State,
+    sync: tabs::sync::State,
     files: tabs::files::State,
     logs: tabs::logs::State,
     /// Position et taille données à la fenêtre de l'explorateur à son ouverture (relues des
@@ -93,6 +97,7 @@ impl NasApp {
             key_error: None,
             services: Default::default(),
             sites: Default::default(),
+            sync: Default::default(),
             files: Default::default(),
             logs: Default::default(),
             float_rect: None,
@@ -210,6 +215,7 @@ impl eframe::App for NasApp {
             Tab::Dashboard => tabs::dashboard::show(ui, &link, &self.prefs.agent_addr, &self.server),
             Tab::Services => open_logs = tabs::services::show(ui, &mut self.services, &self.server, &link, &self.prefs.agent_addr),
             Tab::Sites => open_logs = tabs::sites::show(ui, &mut self.sites, &self.server, &link, &self.prefs.agent_addr),
+            Tab::Sync => tabs::sync::show(ui, &mut self.sync, &self.server, &link, &self.prefs.agent_addr),
             Tab::Logs => tabs::logs::show(ui, &mut self.logs, &self.server, &link, &self.prefs.agent_addr),
             Tab::Files if self.prefs.files_floating => {
                 // Explorateur détaché : on le signale, avec de quoi le ramener.

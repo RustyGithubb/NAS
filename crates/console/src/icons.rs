@@ -14,6 +14,21 @@ macro_rules! emojis {
         fn bytes(e: Emoji) -> &'static [u8] {
             match e { $(Emoji::$name => include_bytes!(concat!("../assets/emoji/", $file, ".png"))),* }
         }
+
+        /// Tous les émojis disponibles (choix de l'icône d'une app, onglet Synchro).
+        pub const ALL: &[Emoji] = &[$(Emoji::$name),*];
+
+        impl Emoji {
+            /// Code Twemoji (« 1f5c2 »), enregistré par l'agent comme icône d'une app.
+            pub fn code(self) -> &'static str {
+                match self { $(Emoji::$name => $file),* }
+            }
+
+            /// Émoji d'après son code ; inconnu → pièce de puzzle.
+            pub fn from_code(code: &str) -> Emoji {
+                match code { $($file => Emoji::$name,)* _ => Emoji::Plugin }
+            }
+        }
     };
 }
 

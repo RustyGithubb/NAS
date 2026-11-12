@@ -3,7 +3,8 @@
 Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Cargo :
 - `crates/console` : app de bureau Rust (egui) sous Windows. DA reprise de WorkTable (`../WorkTable`) : thèmes, pilule flottante, sélection liquide, barre de titre intégrée, textes `t!`/`tf!`.
 - `crates/agent` : serveur sur le Mac mini, répond à la console. Sous Windows, ce qui est propre à Linux (systemd, journald, SMART) est simulé.
-- `crates/proto` : types partagés.
+- `crates/proto` : types partagés (`proto::sync` : synchronisation des apps).
+- `crates/sync-client` : client de synchronisation pour les apps (WorkTable…) : chiffrement de bout en bout + connexion à `/sync/…`. Bloquant (ureq), à appeler hors de l'interface.
 
 ## Règles
 - Réponds en français, concis, sans récapitulatif.
@@ -42,6 +43,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - drives.rs : disques de ce PC et leur nom (GetVolumeInformationW sous Windows)
 - preview.rs : aperçus du volet Détails des Fichiers (images décodées hors de l'interface, début des textes) et vignettes de la vue en grandes icônes
 - ole_drag.rs (Windows seulement) : glisser des fichiers de la console vers l'Explorateur / le Bureau (glisser-déposer OLE, objets COM écrits à la main avec windows-sys)
+- tabs/sync.rs : onglet Synchro (vue d'ensemble, répertoire d'apps, comptes, invitations, postes) ; données via `server.poll_sync` / `sync_action` / `sync_invite`
 - server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions, journaux, fichiers et transferts dans des fils à part ; téléchargements dans Téléchargements\NAS)
 - icons.rs : émojis Twemoji (assets/emoji, CC-BY 4.0) par type de fichier et par emplacement
 - tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (explorateur façon Windows : onglets, barre d'adresse et de commandes, Accueil, Galerie, Détails, liste / grandes icônes, recherche instantanée, presse-papiers, épinglés, « Ce PC », glisser-déposer serveur ↔ PC, onglet Transferts), settings.rs
@@ -54,6 +56,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - sites/ : sites web — caddy.rs (fichier par site dans /etc/caddy/sites, sauvegardes tar + mysqldump), mock.rs
 - sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
 - network.rs : réseau du serveur (route par défaut, compteurs /sys, nmcli, ip, ping vers la box et 1.1.1.1, coupures lues dans le journal de NetworkManager et wpa_supplicant, test de débit avec curl) ; simulé hors du Mac. Route `/api/network` ajoutée sans changer la version du protocole (404 = agent trop ancien)
+- sync/ : synchronisation des apps — mod.rs (dossiers, purge, sauvegarde, limite de demandes), db.rs (SQLite : apps, comptes, accès, postes, documents), public.rs (`/sync/…`, sessions des comptes, traitées avant la clé dans `handle()`), admin.rs (`/api/sync/…`). Types : `nas_proto::sync`
 - update.rs : recherche de mise à jour (lance le service `nas-agent-update`, lit /var/lib/nas-agent/update.json)
 - Routes et types JSON : `crates/proto/src/lib.rs`
 

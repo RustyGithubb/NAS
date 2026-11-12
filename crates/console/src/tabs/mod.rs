@@ -7,6 +7,7 @@ pub mod logs;
 pub mod services;
 pub mod settings;
 pub mod sites;
+pub mod sync;
 
 use eframe::egui::{self, RichText, Stroke};
 

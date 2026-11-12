@@ -342,6 +342,22 @@ pub fn draw_icon(p: &Painter, r: Rect, tab: Tab, c: Color32, phase: f32) {
                 p.line_segment([o + vec2(-half, dy * rad), o + vec2(half, dy * rad)], thin);
             }
         }
+        Tab::Sync => {
+            // Deux flèches en cercle (synchronisation) ; au clic, elles font un tour.
+            let o = r.center();
+            let rad = r.width() / 2.0 - 1.5 * w;
+            let turn = ease(phase) * std::f32::consts::TAU;
+            for half in [0.0f32, std::f32::consts::PI] {
+                let start = half + turn + 0.35;
+                let arc: Vec<Pos2> = (0..=16).map(|i| o + egui::Vec2::angled(start + i as f32 / 16.0 * 2.3) * rad).collect();
+                let tip = *arc.last().expect("arc non vide");
+                let dir = egui::Vec2::angled(start + 2.3 + std::f32::consts::FRAC_PI_2);
+                let side = egui::Vec2::angled(start + 2.3);
+                let head = 2.6 * w;
+                p.add(egui::Shape::line(arc, s));
+                p.add(egui::Shape::line(vec![tip - dir * head + side * head, tip, tip - dir * head - side * head], s));
+            }
+        }
         Tab::Logs => {
             // Terminal : cadre, invite « > » et curseur « _ ».
             let frame = r.shrink(0.5 * w);

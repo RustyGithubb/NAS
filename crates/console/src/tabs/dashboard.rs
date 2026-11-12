@@ -328,7 +328,7 @@ fn rate(bps: u64) -> String {
 }
 
 /// « il y a 40 min », « il y a 2 h », « il y a 12 s ».
-fn ago(ms: i64) -> String {
+pub(crate) fn ago(ms: i64) -> String {
     let s = ((now_ms() - ms) / 1000).max(0) as u64;
     let d = match s {
         0..60 => format!("{s} s"),
@@ -355,14 +355,14 @@ fn in_rect(ui: &mut egui::Ui, r: Rect, body: impl FnOnce(&mut egui::Ui)) {
 }
 
 /// Tuile : clé d'animation, intitulé, valeur, note, jauge facultative, en alerte.
-type Tile<'a> = (&'a str, &'a str, String, String, Option<f32>, bool);
+pub(crate) type Tile<'a> = (&'a str, &'a str, String, String, Option<f32>, bool);
 
 /// Hauteur des tuiles.
-const TILE_H: f32 = 112.0;
+pub(crate) const TILE_H: f32 = 112.0;
 
 /// Tuile : intitulé discret, grande valeur, note, et jauge facultative (0 à 100). En alerte
 /// (seuil dépassé) : fond et contour rouges, valeur en rouge.
-fn tile(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>, alert: bool) {
+pub(crate) fn tile(ui: &mut egui::Ui, key: &str, label: &str, value: &str, note: &str, gauge: Option<f32>, alert: bool) {
     let jolt = crate::widgets::shake_offset(ui.ctx(), ui.max_rect().left() * 0.011);
     crate::widgets::shifted(ui, jolt, |ui| tile_inner(ui, key, label, value, note, gauge, alert));
 }

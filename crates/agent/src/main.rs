@@ -4,7 +4,10 @@
 //! elle-même). Pour la changer : variable d'environnement `NAS_AGENT_ADDR`, par exemple
 //! `NAS_AGENT_ADDR=0.0.0.0:7878` pour écouter sur tout le réseau.
 //! Services et journaux : systemd sur le Mac mini, simulés ailleurs (`NAS_AGENT_MOCK=1` pour forcer).
-//! Chaque demande doit porter la clé d'accès (voir `key.rs`) ; `nas-agent --show-key` l'affiche.
+//! Chaque demande `/api/…` doit porter la clé d'accès (voir `key.rs`) ; `nas-agent --show-key`
+//! l'affiche. Les routes `/sync/…` (synchronisation des apps, voir `sync/`) ont leurs propres
+//! sessions et sont les seules qu'on peut exposer sur Internet (Caddy) : une demande `/api/…`
+//! passée par un serveur intermédiaire (en-tête `X-Forwarded-For`) est refusée.
 
 mod backend;
 mod files;
@@ -12,6 +15,7 @@ mod key;
 mod network;
 mod sampler;
 mod sites;
+mod sync;
 mod update;
 
 use std::sync::{Arc, Mutex};
@@ -71,7 +75,8 @@ fn main() {
 
     let updater = update::Updater::new(backend.simulated());
     let network = network::NetMonitor::start(backend.simulated());
-    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new(), updater, network });
+    let sync = sync::Sync::open(backend.simulated());
+    let ctx = Arc::new(Ctx { key, status, backend, sites, files: files::Files::new(), updater, network, sync });
     // Une demande = un fil : un gros transfert de fichier ne bloque pas le reste.
     for request in server.incoming_requests() {
         let ctx = ctx.clone();
@@ -88,11 +93,22 @@ struct Ctx {
     files: files::Files,
     updater: update::Updater,
     network: network::NetMonitor,
+    /// Synchronisation des apps ; `None` si son dossier est inaccessible.
+    sync: Option<Arc<sync::Sync>>,
 }
 
 fn handle(ctx: &Ctx, mut request: tiny_http::Request) {
+    // Synchronisation : sessions des comptes, pas la clé de la console.
+    if request.url().starts_with("/sync/") {
+        sync::serve(ctx.sync.as_deref(), request);
+        return;
+    }
+    let forwarded = request.headers().iter().any(|h| h.field.equiv("X-Forwarded-For"));
     let auth = request.headers().iter().find(|h| h.field.equiv("Authorization")).map(|h| h.value.as_str());
-    let (code, body) = if !key::authorized(auth, &ctx.key) {
+    let (code, body) = if forwarded {
+        // Arrivée par Caddy (Internet) : l'administration n'est jamais exposée.
+        error(403, "administration accessible seulement en réseau local")
+    } else if !key::authorized(auth, &ctx.key) {
         error(401, "clé d'accès refusée")
     } else {
         let url = request.url().to_string();
@@ -116,6 +132,17 @@ fn handle(ctx: &Ctx, mut request: tiny_http::Request) {
                 },
                 None => error(400, "paramètres manquants"),
             },
+            // Synchronisation : actions avec un corps JSON.
+            (method, p) if p == "/api/sync" || p.starts_with("/api/sync/") => {
+                let post = *method == tiny_http::Method::Post;
+                let mut body = Vec::new();
+                if post {
+                    use std::io::Read;
+                    let _ = request.as_reader().take(1024 * 1024).read_to_end(&mut body);
+                }
+                let parts: Vec<&str> = p.trim_matches('/').split('/').skip(2).collect();
+                sync::admin(ctx.sync.as_deref(), post, &parts, &body)
+            }
             _ => route(request.method(), &url, ctx),
         }
     };
