@@ -2,15 +2,13 @@
 
 ## Non publié
 ### Ajouts
-- Synchro (nouvel onglet, icône ↻) : synchronisation des apps avec le serveur. Répertoire d'apps (WorkTable inscrite d'office, « Inscrire une app » avec icône, quota, historique, version minimale ; couper / supprimer), comptes (création avec code d'invitation valable 48 h, apps autorisées et quota par app, postes connectés et « Révoquer », réinitialisation, suppression), vue d'ensemble (espace, postes, activité récente, alertes en rouge, sauvegarde, adresse publique, interrupteur général). Protocole v10 : mettre à jour l'agent et la console ensemble.
-- `crates/sync-client` : client de synchronisation commun aux apps (WorkTable d'abord) : premier login avec le code d'invitation et code de récupération, connexion, envoi / réception, changement de mot de passe. Chiffrement de bout en bout sur le poste (Argon2id, AES-256-GCM, noms en HMAC-SHA256, une clé par app).
-- Agent : module de synchronisation (`/sync/…` pour les apps, avec leurs propres sessions ; `/api/sync/…` pour la console). Base SQLite dans `/srv/nas/sync`, contenu chiffré par les apps (le serveur ne voit ni les noms ni le contenu), versions gardées selon l'historique de l'app, sauvegarde nocturne dans `/srv/nas/sauvegardes/sync`. Les demandes `/api/…` arrivées par Caddy (`X-Forwarded-For`) sont refusées.
 - Tableau de bord : panneau Réseau (Wi-Fi, signal, bande et canal, liaison, point d'accès, IP, passerelle, DNS, débit reçu/envoyé en direct sur 5 min, latence et pertes vers la box et internet, coupures Wi-Fi et leur raison, bouton « Tester le débit »), en rouge si signal faible, pertes ou coupure récente. Le stockage passe à droite. Nécessite la mise à jour de l'agent (sinon « Agent trop ancien »).
 - Fichiers : disques connectés listés sous « Ce PC » dans le volet de gauche (nom Windows du disque, clé USB, lecteur réseau…), comme dans l'Explorateur.
 - Fichiers : vignettes des images en vue « Grandes icônes » et dans la Galerie, à la place de l'icône.
 - Fichiers : un onglet tiré par son intitulé hors de la barre d'onglets s'ouvre seul dans sa fenêtre (barre de titre maison, épingle « toujours au premier plan ») ; la fermer le ramène dans l'explorateur. Chaque fenêtre affiche son propre dossier ; copier/coller marche d'une fenêtre à l'autre.
 - Fichiers : aperçu du fichier sélectionné dans le volet Détails à la place de l'icône (images png, jpg, gif, webp, bmp jusqu'à 25 Mo ; début des fichiers texte et de code, 64 Ko).
 ### Corrections
+- Console : un trou de réseau de moins de 15 s ne fait plus passer l'agent « hors ligne » (l'état précédent reste affiché et la console réessaie).
 - Fichiers : volet de gauche réorganisé, groupe « NAS » avec Accueil, Galerie (dossier Médias), Fichiers (dossier Partage) et Sauvegardes.
 - Agent : les départs volontaires du Mac (reconnexion, réglage Wi-Fi changé) ne comptent plus comme des coupures dans le panneau Réseau.
 - Console : un agent d'une autre version du protocole n'est plus traité comme hors ligne ; Réglages › Serveur garde le bouton « Rechercher » pour le mettre à jour, et les onglets expliquent quoi faire.

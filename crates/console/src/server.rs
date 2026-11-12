@@ -15,6 +15,9 @@ const PERIOD: Duration = Duration::from_secs(2);
 const LOG_PERIOD: Duration = Duration::from_secs(1);
 /// Délai au-delà duquel l'agent est considéré comme injoignable.
 const TIMEOUT: Duration = Duration::from_secs(3);
+/// Absence de réponse tolérée avant d'afficher l'agent hors ligne (le Wi-Fi du Mac a des trous
+/// de quelques secondes) : l'état précédent reste affiché pendant ce temps.
+const GRACE: Duration = Duration::from_secs(15);
 /// Lignes de journal gardées en mémoire par la console.
 const LOG_KEEP: usize = 3000;
 
@@ -71,16 +74,6 @@ pub struct Shared {
     pub network: Option<Result<Network, NetError>>,
     network_polled: Option<Instant>,
     network_in_flight: bool,
-    /// Synchronisation des apps (onglet Synchro) : dernier état reçu, ou erreur.
-    pub sync: Option<Result<nas_proto::sync::Overview, String>>,
-    sync_polled: Option<Instant>,
-    sync_in_flight: bool,
-    /// Action d'administration en cours.
-    pub sync_busy: bool,
-    /// Résultat de la dernière action (réussie ?, message).
-    pub sync_result: Option<(bool, String)>,
-    /// Code d'invitation à afficher (nouveau compte ou réinitialisation).
-    pub sync_invite: Option<nas_proto::sync::Invitation>,
 }
 
 /// Réseau illisible : agent trop ancien (route absente) ou autre erreur.
@@ -311,10 +304,21 @@ impl Server {
         let agent = ureq::AgentBuilder::new().timeout(TIMEOUT).build();
         let (s, a, c) = (shared.clone(), agent.clone(), ctx.clone());
         std::thread::spawn(move || {
+            // Dernière réponse de l'agent (pour la tolérance aux trous du réseau).
+            let mut answered: Option<(Target, Instant)> = None;
             loop {
                 let to = Target::of(&lock(&s));
                 let started = Instant::now();
                 let link = fetch_status(&a, &to);
+                if !matches!(link, Link::Offline(_)) {
+                    answered = Some((to.clone(), Instant::now()));
+                }
+                // Pas de réponse, mais l'agent répondait il y a peu : on garde l'affichage et on réessaie.
+                let recent = answered.as_ref().is_some_and(|(t, at)| t.addr == to.addr && t.key == to.key && at.elapsed() < GRACE);
+                if matches!(link, Link::Offline(_)) && recent {
+                    std::thread::sleep(PERIOD.saturating_sub(started.elapsed()));
+                    continue;
+                }
                 let online = matches!(link, Link::Online(_));
                 let services = online.then(|| get::<Services>(&a, &to, "/api/services").ok()).flatten();
                 let sites = online.then(|| get::<Sites>(&a, &to, "/api/sites").ok()).flatten();
@@ -871,97 +875,6 @@ impl Server {
         });
     }
 
-    /// À appeler à chaque image par l'onglet Synchro : redemande l'état toutes les 3 s.
-    pub fn poll_sync(&self) {
-        let to = {
-            let mut s = self.data();
-            let every = Duration::from_secs(3);
-            self.ctx.request_repaint_after(every);
-            if s.sync_in_flight || s.sync_polled.is_some_and(|t| t.elapsed() < every) {
-                return;
-            }
-            s.sync_in_flight = true;
-            s.sync_polled = Some(Instant::now());
-            Target::of(&s)
-        };
-        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
-        std::thread::spawn(move || {
-            let r = get::<nas_proto::sync::Overview>(&agent, &to, "/api/sync");
-            let mut s = lock(&shared);
-            s.sync_in_flight = false;
-            if to.current(&s) {
-                s.sync = Some(r);
-            }
-            ctx.request_repaint();
-        });
-    }
-
-    /// Action d'administration de la synchronisation (`/api/sync/…`, corps JSON facultatif).
-    /// Réussie : `done` s'affiche dans `sync_result` ; l'état est redemandé tout de suite.
-    pub fn sync_action(&self, path: &str, body: Option<serde_json::Value>, done: String) {
-        self.sync_post(path, body, move |r: ActionResult| (r.ok, if r.ok { done } else { r.message }), |_, _| {});
-    }
-
-    /// Création d'un compte ou nouvelle invitation : le code arrive dans `sync_invite`.
-    pub fn sync_invite(&self, path: &str, body: Option<serde_json::Value>) {
-        self.sync_post(
-            path,
-            body,
-            |r: nas_proto::sync::Invitation| (r.ok, r.message.clone()),
-            |s, r: nas_proto::sync::Invitation| {
-                if r.ok {
-                    s.sync_invite = Some(r);
-                    s.sync_result = None;
-                }
-            },
-        );
-    }
-
-    fn sync_post<T: serde::de::DeserializeOwned + Clone + Send + 'static>(
-        &self,
-        path: &str,
-        body: Option<serde_json::Value>,
-        outcome: impl FnOnce(T) -> (bool, String) + Send + 'static,
-        keep: impl FnOnce(&mut Shared, T) + Send + 'static,
-    ) {
-        let to = {
-            let mut s = self.data();
-            if s.sync_busy {
-                return;
-            }
-            s.sync_busy = true;
-            Target::of(&s)
-        };
-        let (shared, agent, ctx, path) = (self.shared.clone(), self.agent.clone(), self.ctx.clone(), path.to_string());
-        std::thread::spawn(move || {
-            let req = to.request(&agent, "POST", &path);
-            let sent = match body {
-                Some(b) => req.send_json(b),
-                None => req.call(),
-            };
-            let reply = match sent {
-                Ok(r) => r.into_json::<T>().map_err(|_| t!("réponse illisible", "unreadable response").to_string()),
-                Err(e) => Err(describe(e)),
-            };
-            let overview = get::<nas_proto::sync::Overview>(&agent, &to, "/api/sync");
-            let mut s = lock(&shared);
-            s.sync_busy = false;
-            if to.current(&s) {
-                match reply {
-                    Ok(v) => {
-                        let (ok, msg) = outcome(v.clone());
-                        s.sync_result = if ok && msg.is_empty() { None } else { Some((ok, msg)) };
-                        keep(&mut s, v);
-                    }
-                    Err(e) => s.sync_result = Some((false, e)),
-                }
-                s.sync = Some(overview);
-                s.sync_polled = Some(Instant::now());
-            }
-            ctx.request_repaint();
-        });
-    }
-
     /// Lance une recherche de mise à jour de l'agent ; l'avancement arrive par `poll_update`.
     pub fn check_update(&self) {
         let to = Target::of(&self.data());
@@ -1037,6 +950,7 @@ fn lock(s: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 }
 
 /// Agent visé par une demande : adresse et clé au moment où elle part.
+#[derive(Clone)]
 struct Target {
     addr: String,
     key: String,
