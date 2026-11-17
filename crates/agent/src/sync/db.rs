@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS docs (
     deleted INTEGER NOT NULL, device TEXT NOT NULL, time INTEGER NOT NULL,
     PRIMARY KEY (user, app, doc, version));
 CREATE INDEX IF NOT EXISTS docs_cursor ON docs (user, app, version);
+CREATE TABLE IF NOT EXISTS avatars (
+    user INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    png BLOB NOT NULL, updated INTEGER NOT NULL);
 ";
 
 /// 20 Go.
@@ -209,6 +212,18 @@ pub fn delete_user(c: &Connection, id: u64) -> rusqlite::Result<usize> {
     c.execute("DELETE FROM users WHERE id = ?1", [id as i64])
 }
 
+/// Image de profil d'un compte (PNG en clair, envoyé par l'app) ; `None` la retire.
+pub fn set_avatar(c: &Connection, user: u64, png: Option<&[u8]>) -> rusqlite::Result<usize> {
+    match png {
+        Some(png) => c.execute("INSERT OR REPLACE INTO avatars VALUES (?1, ?2, ?3)", params![user as i64, png, now() as i64]),
+        None => c.execute("DELETE FROM avatars WHERE user = ?1", [user as i64]),
+    }
+}
+
+pub fn avatar(c: &Connection, user: u64) -> Option<Vec<u8>> {
+    c.query_row("SELECT png FROM avatars WHERE user = ?1", [user as i64], |r| r.get(0)).optional().ok().flatten()
+}
+
 pub fn login_result(c: &Connection, id: u64, ok: bool) {
     let _ = if ok {
         c.execute("UPDATE users SET failures = 0, last_seen = ?2 WHERE id = ?1", params![id as i64, now() as i64])
@@ -218,7 +233,11 @@ pub fn login_result(c: &Connection, id: u64, ok: bool) {
 }
 
 pub fn users(c: &Connection) -> rusqlite::Result<Vec<UserInfo>> {
-    let mut st = c.prepare("SELECT id, login, active, auth_hash IS NULL, invite_expires, created, last_seen, failures FROM users ORDER BY login")?;
+    let mut st = c.prepare(
+        "SELECT id, login, active, auth_hash IS NULL, invite_expires, created, last_seen, failures,
+                EXISTS (SELECT 1 FROM avatars WHERE avatars.user = users.id)
+         FROM users ORDER BY login",
+    )?;
     let rows = st.query_map([], |r| {
         Ok(UserInfo {
             id: r.get::<_, i64>(0)? as u64,
@@ -231,6 +250,7 @@ pub fn users(c: &Connection) -> rusqlite::Result<Vec<UserInfo>> {
             failures: r.get(7)?,
             apps: Vec::new(),
             devices: Vec::new(),
+            has_avatar: r.get(8)?,
         })
     })?;
     let mut list = rows.collect::<rusqlite::Result<Vec<_>>>()?;

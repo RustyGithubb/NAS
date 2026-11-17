@@ -86,6 +86,19 @@ fn body<T: DeserializeOwned>(request: &mut Request, limit: u64) -> Result<T, Rep
     serde_json::from_slice(&buf).map_err(|e| error(400, &format!("demande invalide : {e}")))
 }
 
+/// Corps brut d'une image PNG (taille limitée à `MAX_AVATAR`, signature PNG vérifiée).
+fn png_body(request: &mut Request) -> Result<Vec<u8>, Reply> {
+    let mut buf = Vec::new();
+    request.as_reader().take(proto::MAX_AVATAR as u64 + 1).read_to_end(&mut buf).map_err(|_| error(400, "lecture impossible"))?;
+    if buf.len() > proto::MAX_AVATAR {
+        return Err(error(413, "image trop grosse"));
+    }
+    if !buf.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(error(400, "image PNG attendue"));
+    }
+    Ok(buf)
+}
+
 fn route(s: &Sync, request: &mut Request) -> Reply {
     let url = request.url().to_string();
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
@@ -124,6 +137,18 @@ fn route(s: &Sync, request: &mut Request) -> Reply {
                         Err(e) => error(500, &e.to_string()),
                     },
                     Err(_) => error(400, "poste invalide"),
+                },
+                // Image de profil du compte : PNG en clair, affiché par la console du NAS.
+                (Method::Put, ["sync", "avatar"]) => match png_body(request) {
+                    Ok(png) => match db::set_avatar(&s.db(), who.user, Some(&png)) {
+                        Ok(_) => json(200, &proto::Ok { ok: true }),
+                        Err(e) => error(500, &e.to_string()),
+                    },
+                    Err(e) => e,
+                },
+                (Method::Delete, ["sync", "avatar"]) => match db::set_avatar(&s.db(), who.user, None) {
+                    Ok(_) => json(200, &proto::Ok { ok: true }),
+                    Err(e) => error(500, &e.to_string()),
                 },
                 (_, ["sync", app, rest @ ..]) => {
                     let app = *app;

@@ -31,6 +31,14 @@ pub fn admin(sync: Option<&Sync>, post: bool, parts: &[&str], body: &[u8]) -> Re
     };
     match (post, parts) {
         (false, []) => json(200, &overview(s)),
+        // Image de profil d'un compte, en base64 (les réponses de l'agent sont du texte).
+        (false, ["users", id, "avatar"]) => match id.parse::<u64>().ok().and_then(|u| db::avatar(&s.db(), u)) {
+            Some(png) => {
+                use base64::Engine;
+                json(200, &serde_json::json!({ "png": base64::engine::general_purpose::STANDARD.encode(png) }))
+            }
+            None => (404, serde_json::json!({ "error": "pas d'image" }).to_string()),
+        },
         (true, ["settings"]) => done(parse::<Settings>(body).map(|v| {
             let db = s.db();
             db::set_setting(&db, "enabled", if v.enabled { "1" } else { "0" });

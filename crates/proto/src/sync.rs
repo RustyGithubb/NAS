@@ -39,6 +39,9 @@ pub const WORKTABLE: &str = "worktable";
 /// Taille maximale d'un document envoyé en une fois (après chiffrement).
 pub const MAX_DOC: u64 = 8 * 1024 * 1024;
 
+/// Taille maximale de l'image de profil d'un compte (PNG en clair, envoyé par l'app).
+pub const MAX_AVATAR: usize = 64 * 1024;
+
 /// Nombre maximal de documents renvoyés par un `pull`.
 pub const PULL_LIMIT: usize = 500;
 
@@ -276,6 +279,10 @@ pub struct UserInfo {
     pub devices: Vec<Device>,
     /// Échecs de connexion depuis la dernière réussite.
     pub failures: u32,
+    /// Image de profil envoyée par une app (copie en clair, `/api/sync/users/{id}/avatar`).
+    /// `serde(default)` : agent plus ancien = pas d'image.
+    #[serde(default)]
+    pub has_avatar: bool,
 }
 
 /// Accès d'un compte à une app.

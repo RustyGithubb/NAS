@@ -187,6 +187,20 @@ impl Client {
         json::<proto::Ok>(self.req("POST", &format!("/sync/devices/{id}/revoke")).call()).map(|_| ())
     }
 
+    /// Image de profil du compte, affichée par la console du NAS. **En clair** (pas chiffrée,
+    /// contrairement aux fichiers) : PNG de `proto::MAX_AVATAR` au plus.
+    pub fn set_avatar(&self, png: &[u8]) -> Result<(), Error> {
+        if png.len() > proto::MAX_AVATAR {
+            return Err(Error::Other("image de profil trop grosse (64 Ko maximum)".into()));
+        }
+        json::<proto::Ok>(self.req("PUT", "/sync/avatar").set("Content-Type", "image/png").send_bytes(png)).map(|_| ())
+    }
+
+    /// Retire l'image de profil du compte.
+    pub fn clear_avatar(&self) -> Result<(), Error> {
+        json::<proto::Ok>(self.req("DELETE", "/sync/avatar").call()).map(|_| ())
+    }
+
     /// Change le mot de passe (la clé maître ne change pas : rien n'est rechiffré).
     pub fn change_password(&self, login: &str, master: &MasterKey, old: &str, new: &str) -> Result<(), Error> {
         let salt = self.salt(login)?;
