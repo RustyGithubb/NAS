@@ -11,6 +11,7 @@
 - Fichiers : vignettes des images en vue « Grandes icônes » et dans la Galerie, à la place de l'icône.
 - Fichiers : un onglet tiré par son intitulé hors de la barre d'onglets s'ouvre seul dans sa fenêtre (barre de titre maison, épingle « toujours au premier plan ») ; la fermer le ramène dans l'explorateur. Chaque fenêtre affiche son propre dossier ; copier/coller marche d'une fenêtre à l'autre.
 - Fichiers : aperçu du fichier sélectionné dans le volet Détails à la place de l'icône (images png, jpg, gif, webp, bmp jusqu'à 25 Mo ; début des fichiers texte et de code, 64 Ko).
+- Synchro : image de profil d'un compte. Les apps l'envoient en clair (`PUT /sync/avatar`, PNG de 64 Ko au plus), à part des fichiers chiffrés ; la console la lit avec `GET /api/sync/users/{id}/avatar`. `sync-client` : `set_avatar` / `clear_avatar`.
 ### Corrections
 - Synchro : la sauvegarde nocturne retire les versions purgées du serveur (elle les gardait pour toujours) ; une version purgée reste dans la sauvegarde tant qu'une des copies de la base gardées peut encore la citer.
 - Console : un trou de réseau de moins de 15 s ne fait plus passer l'agent « hors ligne » (l'état précédent reste affiché et la console réessaie).
