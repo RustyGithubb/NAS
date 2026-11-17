@@ -152,7 +152,8 @@ impl Sync {
     }
 
     /// Copie de la base (sept dernières gardées) et miroir des fichiers de versions (jamais
-    /// modifiés une fois écrits : seuls les nouveaux sont copiés).
+    /// modifiés une fois écrits : seuls les nouveaux sont copiés ; ceux purgés sont retirés une
+    /// fois plus aucune copie de la base ne peut les citer).
     pub fn backup(&self) -> Result<(), String> {
         std::fs::create_dir_all(&self.backup_dir).map_err(|e| e.to_string())?;
         let t = now();
@@ -170,6 +171,9 @@ impl Sync {
             let _ = std::fs::remove_file(dbs.remove(0));
         }
         mirror(&self.dir, &self.backup_dir.join("versions"))?;
+        // Date de la plus ancienne copie de la base encore gardée (`sync-<date>.db`).
+        let oldest = dbs.first().and_then(|p| p.file_stem()?.to_str()?.strip_prefix("sync-")?.parse().ok()).unwrap_or(t);
+        prune(&self.dir, &self.backup_dir.join("versions"), oldest, t);
         let db = self.db();
         db::set_setting(&db, "last_backup", &t.to_string());
         db::set_setting(&db, "backup_error", "");
@@ -275,6 +279,32 @@ fn mirror(from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Marque d'une copie dont la version a été purgée du serveur : `<fichier>.purgee-<date>`.
+const PURGED: &str = ".purgee-";
+
+/// Retire de la sauvegarde les versions purgées du serveur. Une copie absente de `from` est
+/// d'abord renommée avec la date du jour (`now`, secondes) ; elle n'est supprimée qu'une fois
+/// toutes les copies de la base gardées postérieures à cette date (`oldest_db` : date de la plus
+/// ancienne), aucune ne pouvant alors encore la citer.
+fn prune(from: &Path, to: &Path, oldest_db: u64, now: u64) {
+    let Ok(entries) = std::fs::read_dir(to) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if path.is_dir() {
+            prune(&from.join(&name), &path, oldest_db, now);
+            let _ = std::fs::remove_dir(&path); // seulement s'il est vide
+        } else if let Some((original, date)) = name.rsplit_once(PURGED) {
+            let marked: u64 = date.parse().unwrap_or(u64::MAX);
+            if marked < oldest_db && !from.join(original).exists() {
+                let _ = std::fs::remove_file(&path);
+            }
+        } else if !from.join(&name).exists() {
+            let _ = std::fs::rename(&path, to.join(format!("{name}{PURGED}{now}")));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +328,38 @@ mod tests {
         assert!(same("abc", "abc"));
         assert!(!same("abc", "abd"));
         assert!(!same("abc", "ab"));
+    }
+
+    #[test]
+    fn purged_versions_leave_backup_after_delay() {
+        let root = std::env::temp_dir().join(format!("nas_prune_{}", std::process::id()));
+        let (from, to) = (root.join("from"), root.join("to"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(from.join("app/1/ab")).unwrap();
+        std::fs::write(from.join("app/1/ab/doc.2"), b"v2").unwrap();
+        std::fs::write(from.join("app/1/ab/doc.1"), b"v1").unwrap();
+        mirror(&from, &to).unwrap();
+        // Version 1 purgée du serveur.
+        std::fs::remove_file(from.join("app/1/ab/doc.1")).unwrap();
+        // Marquée le jour 100 (copies de la base des jours 94 à 100 gardées).
+        prune(&from, &to, 94, 100);
+        let dir = to.join("app/1/ab");
+        let marked = dir.join(format!("doc.1{PURGED}100"));
+        assert!(dir.join("doc.2").exists());
+        assert!(!dir.join("doc.1").exists());
+        assert!(marked.exists(), "gardée tant qu'une copie de la base peut la citer");
+        // Plus ancienne copie de la base du jour 100 : elle peut encore la citer.
+        prune(&from, &to, 100, 106);
+        assert!(marked.exists());
+        // Toutes les copies de la base sont postérieures au marquage.
+        prune(&from, &to, 101, 107);
+        assert!(!marked.exists());
+        assert!(dir.join("doc.2").exists());
+        // Dossier vidé : retiré.
+        std::fs::remove_dir_all(from.join("app/1/ab")).unwrap();
+        prune(&from, &to, 101, 108);
+        prune(&from, &to, 109, 110);
+        assert!(!to.join("app/1/ab").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

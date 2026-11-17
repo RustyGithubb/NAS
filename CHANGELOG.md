@@ -12,6 +12,7 @@
 - Fichiers : un onglet tiré par son intitulé hors de la barre d'onglets s'ouvre seul dans sa fenêtre (barre de titre maison, épingle « toujours au premier plan ») ; la fermer le ramène dans l'explorateur. Chaque fenêtre affiche son propre dossier ; copier/coller marche d'une fenêtre à l'autre.
 - Fichiers : aperçu du fichier sélectionné dans le volet Détails à la place de l'icône (images png, jpg, gif, webp, bmp jusqu'à 25 Mo ; début des fichiers texte et de code, 64 Ko).
 ### Corrections
+- Synchro : la sauvegarde nocturne retire les versions purgées du serveur (elle les gardait pour toujours) ; une version purgée reste dans la sauvegarde tant qu'une des copies de la base gardées peut encore la citer.
 - Console : un trou de réseau de moins de 15 s ne fait plus passer l'agent « hors ligne » (l'état précédent reste affiché et la console réessaie).
 - Fichiers : volet de gauche réorganisé, groupe « NAS » avec Accueil, Galerie (dossier Médias), Fichiers (dossier Partage) et Sauvegardes.
 - Agent : les départs volontaires du Mac (reconnexion, réglage Wi-Fi changé) ne comptent plus comme des coupures dans le panneau Réseau.
