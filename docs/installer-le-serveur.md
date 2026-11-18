@@ -59,26 +59,51 @@ sudo tune2fs -m 1 $(findmnt -n -o SOURCE /)
 
 ## 7. Agent NAS
 
+L'agent n'est plus compilé sur le Mac mini : il est téléchargé déjà compilé depuis les versions
+publiées sur GitHub (voir « Publier une version » dans le README). Il faut seulement les fichiers
+de `deploy/` pour installer les services.
+
 ```sh
-sudo apt install git build-essential curl
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-. "$HOME/.cargo/env"
-git clone https://github.com/RustyGithubb/NAS.git && cd NAS
-cargo build --release -p nas-agent
-sudo install -m 755 target/release/nas-agent /usr/local/bin/nas-agent
-sudo sh deploy/install.sh
-sudo systemctl start nas-agent
-sudo nas-agent --show-key    # à coller dans la console : Réglages › Serveur
+sudo apt install curl
+curl -fsSL https://github.com/RustyGithubb/NAS/archive/refs/heads/main.tar.gz | tar -xz   # fichiers du dépôt, sans git
+cd NAS-main
+sudo sh deploy/install.sh                 # services, outils (curl, tar, xz-utils)
+sudo systemctl start nas-agent-update     # télécharge et installe la dernière version de l'agent
+cat /var/lib/nas-agent/update.json        # doit dire « Mis à jour vers la version … »
+sudo nas-agent --show-key    # à coller dans la console : Compte › Clé d'accès
+cd .. && rm -rf NAS-main                  # plus besoin de ces fichiers
 ```
 
-Si cargo n'arrive pas à télécharger : `CARGO_HTTP_MULTIPLEXING=false CARGO_NET_RETRY=10 CARGO_HTTP_TIMEOUT=120 cargo build …`.
+`tar -xz` décompresse l'archive téléchargée ; `systemctl start` lance tout de suite un service
+qui, sinon, attend son heure.
+
+### Passage depuis l'ancienne mise à jour (une seule fois)
+
+Avant la version 0.1.0, le Mac compilait l'agent lui-même depuis un dépôt cloné. Pour passer aux
+versions publiées, une fois la version `v0.1.0` visible sur la page Releases de GitHub :
+
+```sh
+cd ~/NAS && git pull                      # récupère le nouveau script de mise à jour
+sudo sh deploy/install.sh                 # l'installe (et curl, tar, xz-utils)
+sudo systemctl start nas-agent-update     # remplace l'agent compilé ici par celui publié
+cat /var/lib/nas-agent/update.json        # « Mis à jour vers la version 0.1.0 »
+systemctl status nas-agent                # doit être « active (running) »
+```
+
+L'ancien agent est gardé en `/usr/local/bin/nas-agent.prev` et remis automatiquement si le
+nouveau ne démarre pas. Quand tout fonctionne, le dépôt et Rust ne servent plus :
+
+```sh
+rm -rf ~/NAS                  # dépôt cloné
+rustup self uninstall -y      # Rust et cargo (libère environ 1 Go)
+```
 
 `deploy/install.sh` installe :
 
 | Service | Rôle |
 |---|---|
 | `nas-agent` | démarre l'agent avec le Mac, le relance s'il plante |
-| `nas-agent-update` (+ `.timer`) | chaque nuit vers 4 h : nouvelle version sur GitHub, CI verte → compile, installe, relance ; ancienne version remise si la nouvelle ne démarre pas |
+| `nas-agent-update` (+ `.timer`) | chaque nuit vers 4 h : nouvelle version publiée sur GitHub → téléchargement, vérification de l'empreinte, installation, relance ; ancienne version remise si la nouvelle ne démarre pas |
 | `nas-autopoweron` | rallume le Mac quand le courant revient après une coupure |
 
 Commandes utiles :

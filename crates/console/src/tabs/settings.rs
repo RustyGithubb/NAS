@@ -1,27 +1,19 @@
-//! Réglages, organisés comme ceux de WorkTable : Général, Serveur, Apparence, Polices,
-//! Animations, À propos.
+//! Réglages, organisés comme ceux de WorkTable : Général, Apparence, Polices, Animations,
+//! À propos. Le serveur et la clé d'accès sont dans le panneau Compte.
 
 use eframe::egui::{self, RichText};
 
-use super::{header, row, separator};
+use super::header;
 use crate::liquid::Liquid;
 use crate::prefs::{Animation, Curve, Prefs};
-use crate::server::{Link, Server};
 use crate::{theme, widgets};
-use nas_proto::UpdateState;
 
-/// `key` : clé d'accès de l'agent (enregistrée à part, dans le coffre du système).
-pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link, srv: &Server) {
-    let badge = match link {
-        Link::Online(s) => tf!("Connecté à {}", "Connected to {}", s.hostname),
-        _ => String::new(),
-    };
-    header(ui, t!("Application", "Application"), t!("Réglages", "Settings"), &badge, false);
+pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, update: &crate::update::Updater) {
+    header(ui, t!("Application", "Application"), t!("Réglages", "Settings"), "", false);
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         let width = ui.available_width().min(760.0);
         ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
-            general(ui, prefs);
-            server(ui, prefs, key, key_error, link, srv);
+            general(ui, prefs, update);
             themes(ui, prefs);
             fonts(ui, prefs);
             animations(ui, prefs);
@@ -30,94 +22,8 @@ pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: O
     });
 }
 
-/// Serveur : adresse de l'agent, clé d'accès, état de la liaison, mises à jour de l'agent.
-fn server(ui: &mut egui::Ui, prefs: &mut Prefs, key: &mut String, key_error: Option<&str>, link: &Link, srv: &Server) {
-    widgets::card(ui, t!("Serveur", "Server"), 0.0, |ui| {
-        row(ui, t!("Adresse de l'agent", "Agent address"), t!("IP:port de la machine qui fait tourner l'agent", "IP:port of the machine running the agent"), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut prefs.agent_addr).desired_width(240.0).font(egui::TextStyle::Monospace));
-        });
-        separator(ui);
-        let show_id = egui::Id::unique("nas_show_key");
-        let mut show = ui.ctx().data(|d| d.get_temp::<bool>(show_id)).unwrap_or(false);
-        row(ui, t!("Clé d'accès", "Access key"), t!("Affichée par l'agent au premier lancement", "Shown by the agent on first launch"), |ui| {
-            if ui.selectable_label(show, t!("Afficher", "Show")).clicked() {
-                show = !show;
-            }
-            ui.add(egui::TextEdit::singleline(key).password(!show).desired_width(300.0).font(egui::TextStyle::Monospace));
-        });
-        ui.ctx().data_mut(|d| d.insert_temp(show_id, show));
-        if let Some(e) = key_error {
-            ui.label(RichText::new(tf!("Clé non enregistrée dans le coffre du système : {e}", "Key not saved in the system vault: {e}")).color(theme::DANGER()));
-        }
-        separator(ui);
-        let (dot, text) = match link {
-            Link::Connecting => (theme::TEXT_MUTED(), t!("Connexion…", "Connecting…").to_string()),
-            Link::Online(s) => (theme::TEXT(), tf!("Connecté à {}", "Connected to {}", s.hostname)),
-            Link::Offline(e) => (theme::DANGER(), tf!("Hors ligne : {e}", "Offline: {e}")),
-            Link::Denied => (theme::DANGER(), t!("Clé d'accès refusée", "Access key refused").to_string()),
-            Link::Mismatch(a, c) => (theme::DANGER(), tf!("Version incompatible (agent : {a}, console : {c})", "Incompatible version (agent: {a}, console: {c})")),
-        };
-        row(ui, t!("État", "Status"), t!("Liaison avec l'agent", "Link with the agent"), |ui| {
-            ui.label(RichText::new(text).color(theme::TEXT_MUTED()));
-            let (r, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
-            ui.painter().circle_filled(r.center(), 4.0, dot);
-        });
-        // Agent d'une autre version : on peut quand même le mettre à jour d'ici.
-        if matches!(link, Link::Online(_) | Link::Mismatch(..)) {
-            separator(ui);
-            update_row(ui, srv);
-        }
-    });
-    ui.add_space(12.0);
-}
-
-/// Mises à jour de l'agent : vérifiées chaque nuit sur GitHub par le serveur, ou à la demande.
-fn update_row(ui: &mut egui::Ui, srv: &Server) {
-    srv.poll_update();
-    let update = srv.data().update.clone();
-    let running = matches!(&update, Some(Ok(u)) if u.state == UpdateState::Running);
-    row(ui, t!("Mises à jour de l'agent", "Agent updates"), t!("Vérifiées chaque nuit sur GitHub", "Checked every night on GitHub"), |ui| {
-        if ui
-            .add_enabled(!running, egui::Button::new(t!("Rechercher", "Check now")))
-            .on_hover_text(t!("Chercher une nouvelle version sur GitHub et l'installer", "Look for a new version on GitHub and install it"))
-            .clicked()
-        {
-            srv.check_update();
-        }
-        match &update {
-            None => {
-                ui.spinner();
-            }
-            Some(Err(e)) => {
-                ui.add(egui::Label::new(RichText::new(e).color(theme::DANGER())).truncate());
-            }
-            Some(Ok(u)) => {
-                let mut text = u.message.clone();
-                if !u.commit.is_empty() && u.state != UpdateState::Running {
-                    text.push_str(&format!("  ·  {}", u.commit));
-                }
-                if u.checked_ms > 0
-                    && u.state != UpdateState::Running
-                    && let Some(d) = chrono::DateTime::from_timestamp_millis(u.checked_ms)
-                {
-                    text.push_str(&format!("  ·  {}", d.with_timezone(&chrono::Local).format("%d/%m %H:%M")));
-                }
-                let color = match u.state {
-                    UpdateState::Failed => theme::DANGER(),
-                    UpdateState::Updated => theme::TEXT(),
-                    _ => theme::TEXT_MUTED(),
-                };
-                ui.add(egui::Label::new(RichText::new(text).color(color)).truncate());
-                if running {
-                    ui.spinner();
-                }
-            }
-        }
-    });
-}
-
-/// Langue de l'interface, onglet au démarrage et mises à jour.
-fn general(ui: &mut egui::Ui, prefs: &mut Prefs) {
+/// Langue de l'interface et mises à jour de la console.
+fn general(ui: &mut egui::Ui, prefs: &mut Prefs, update: &crate::update::Updater) {
     use crate::i18n::Language;
     widgets::card(ui, t!("Général", "General"), 0.0, |ui| {
         ui.horizontal(|ui| {
@@ -133,8 +39,69 @@ fn general(ui: &mut egui::Ui, prefs: &mut Prefs) {
                 });
             });
         });
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        updates(ui, update);
     });
     ui.add_space(12.0);
+}
+
+/// Mises à jour de la console : vérifier sur GitHub, installer, redémarrer (comme WorkTable).
+fn updates(ui: &mut egui::Ui, update: &crate::update::Updater) {
+    use crate::update::{self, State};
+    let current = env!("CARGO_PKG_VERSION");
+    let state = update.state();
+    let checked = update.checked_at().map(|t| tf!(" (vérifié à {})", " (checked at {})", t.format("%H:%M"))).unwrap_or_default();
+    let (status, accent) = match &state {
+        State::Idle => (tf!("Version {current}", "Version {current}"), false),
+        State::Checking => (t!("Recherche d'une nouvelle version…", "Looking for a new version…").to_string(), false),
+        State::UpToDate => (tf!("Version {current} — à jour{checked}", "Version {current} — up to date{checked}"), false),
+        State::Available(r) => (tf!("Version {} disponible (actuelle : {current})", "Version {} available (current: {current})", r.version), true),
+        State::Downloading(r) => (tf!("Téléchargement de la version {}…", "Downloading version {}…", r.version), false),
+        State::Ready(v) => (tf!("Version {v} installée — redémarrez pour l'utiliser.", "Version {v} installed — restart to use it."), true),
+        State::Failed(e) => (e.clone(), false),
+    };
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(t!("Mises à jour de la console", "Console updates"));
+            let color = if accent { theme::TODAY() } else { theme::TEXT_FAINT() };
+            ui.horizontal(|ui| {
+                if matches!(state, State::Checking | State::Downloading(_)) {
+                    ui.add(egui::Spinner::new().size(11.0));
+                }
+                ui.add(egui::Label::new(RichText::new(status).small().color(color)).wrap());
+            });
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &state {
+            State::Idle | State::UpToDate | State::Failed(_) => {
+                if ui.button(t!("Vérifier", "Check")).on_hover_text(t!("Chercher une nouvelle version sur GitHub", "Look for a new version on GitHub")).clicked() {
+                    update.check(ui.ctx());
+                }
+            }
+            State::Available(r) => {
+                match update::install_blocker() {
+                    None => {
+                        if ui.button(tf!("Installer la {}", "Install {}", r.version)).clicked() {
+                            update.install(ui.ctx());
+                        }
+                    }
+                    Some(why) => {
+                        ui.add_enabled(false, egui::Button::new(t!("Installer", "Install"))).on_disabled_hover_text(why);
+                    }
+                }
+                if !r.page.is_empty() && ui.button(t!("Notes de version", "Release notes")).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(&r.page));
+                }
+            }
+            State::Ready(_) => {
+                if ui.button(t!("Redémarrer", "Restart")).clicked() {
+                    update::restart(ui.ctx());
+                }
+            }
+            State::Checking | State::Downloading(_) => {}
+        });
+    });
 }
 
 /// Choix du thème (12 thèmes), chacun montré par un aperçu de ses couleurs.

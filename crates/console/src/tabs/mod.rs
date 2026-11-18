@@ -52,8 +52,8 @@ pub fn unavailable(ui: &mut egui::Ui, overline: &str, title: &str, link: &Link, 
                 hint(
                     ui,
                     t!(
-                        "Pour l'afficher, sur la machine de l'agent (puis la coller dans Réglages › Serveur) :",
-                        "To show it, on the agent's machine (then paste it in Settings › Server):"
+                        "Pour l'afficher, sur la machine de l'agent (puis la coller dans Compte › Clé d'accès) :",
+                        "To show it, on the agent's machine (then paste it in Account › Access key):"
                     ),
                     "cargo run -p nas-agent -- --show-key",
                 );
@@ -69,8 +69,7 @@ pub fn unavailable(ui: &mut egui::Ui, overline: &str, title: &str, link: &Link, 
                 ui.add_space(12.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        egui::RichText::new(t!("Mets l'agent à jour : Réglages › Serveur › Rechercher", "Update the agent: Settings › Server › Check now"))
-                            .color(theme::TEXT_MUTED()),
+                        egui::RichText::new(t!("Mets l'agent à jour : Compte › Agent › Rechercher", "Update the agent: Account › Agent › Check now")).color(theme::TEXT_MUTED()),
                     );
                 });
             });

@@ -1,7 +1,14 @@
 # Changelog
 
-## Non publié
+## 0.1.0 — 2026-11-18
 ### Ajouts
+- Première version publiée : la console Windows s'installe avec un installeur (icône du logo), et l'agent Linux est construit par GitHub à chaque version publiée.
+- Console : mise à jour automatique depuis Réglages › Général (vérifier, installer, redémarrer) ; une pastille sur Réglages signale une nouvelle version.
+- Console : une seule fenêtre à la fois ; relancer la console ramène la fenêtre déjà ouverte au premier plan. Après une mise à jour, la nouvelle version attend que l'ancienne se ferme.
+- Compte : le panneau disparaît en fondu inversé, comme il apparaît.
+- Console : pastille Compte ronde en haut à gauche (initiales du nom déclaré par l'agent, pastille d'état de la liaison). Un clic ouvre le panneau Compte, sur fond flouté comme dans WorkTable.
+- Compte : l'adresse de l'agent et la clé d'accès y sont désormais, dans des champs protégés (Éditer / Valider / Annuler). L'état de la liaison et les mises à jour de l'agent aussi.
+- Synchro : image de profil des comptes (envoyée par l'app) dans un encadré en haut du panneau du compte et en petit devant chaque compte de la liste ; initiales sans image.
 - Synchro (nouvel onglet, icône ↻) : synchronisation des apps avec le serveur. Répertoire d'apps (WorkTable inscrite d'office, « Inscrire une app » avec icône, quota, historique, version minimale ; couper / supprimer), comptes (création avec code d'invitation valable 48 h, apps autorisées et quota par app, postes connectés et « Révoquer », réinitialisation, suppression), vue d'ensemble (espace, postes, activité récente, alertes en rouge, sauvegarde, adresse publique, interrupteur général). Protocole v10 : mettre à jour l'agent et la console ensemble.
 - `crates/sync-client` : client de synchronisation commun aux apps (WorkTable d'abord) : premier login avec le code d'invitation et code de récupération, connexion, envoi / réception, changement de mot de passe. Chiffrement de bout en bout sur le poste (Argon2id, AES-256-GCM, noms en HMAC-SHA256, une clé par app).
 - Agent : module de synchronisation (`/sync/…` pour les apps, avec leurs propres sessions ; `/api/sync/…` pour la console). Base SQLite dans `/srv/nas/sync`, contenu chiffré par les apps (le serveur ne voit ni les noms ni le contenu), versions gardées selon l'historique de l'app, sauvegarde nocturne dans `/srv/nas/sauvegardes/sync`. Les demandes `/api/…` arrivées par Caddy (`X-Forwarded-For`) sont refusées.
@@ -47,3 +54,8 @@
 - Fichiers : explorateur des emplacements du serveur (Médias, Partage, Sauvegardes) en liste ou en galerie avec des émojis par type ; précédent / suivant / parent, fil d'Ariane, tri par colonne, sélection multiple (Ctrl, Maj), renommer (F2), nouveau dossier, copier / couper / coller, corbeille, favoris, menu clic droit, raccourcis clavier.
 - Fichiers : recherche instantanée dans tout le serveur façon Everything (`*.png`, `ext:jpg;png`, `dossier:`), index tenu par l'agent.
 - Fichiers : envoi par glisser-déposer ou bouton « Envoyer… », téléchargement dans Téléchargements\NAS (double-clic = télécharger et ouvrir).
+### Changements
+- Agent : le Mac mini ne compile plus l'agent. La mise à jour nocturne télécharge la version publiée par GitHub, vérifie son empreinte (SHA-256) et garde l'ancienne version si la nouvelle ne démarre pas.
+- Serveur : l'installation n'a plus besoin de git (curl, tar et xz-utils à la place).
+- Réglages ne gardent que Général, Apparence, Polices, Animations et À propos ; l'adresse de l'agent et la clé d'accès passent dans le panneau Compte.
+- Textes d'aide mis à jour : ils renvoient vers « Compte › Clé d'accès » et « Compte › Agent » (pour mettre l'agent à jour : « Compte › Agent › Rechercher »).

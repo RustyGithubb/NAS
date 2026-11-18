@@ -4,6 +4,11 @@ description = "Console de pilotage du serveur (Windows)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+
+# Release : console publiée pour Windows seulement (archive .zip).
+[package.metadata.dist]
+targets = ["x86_64-pc-windows-msvc"]
 
 [dependencies]
 nas-proto = { path = "../proto" }
@@ -19,11 +24,20 @@ eframe = { version = "0.37.0", features = ["glow"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-# Requêtes HTTP vers l'agent (sans moteur asynchrone).
-ureq = { version = "2", default-features = false, features = ["json"] }
+# Requêtes HTTP vers l'agent (sans moteur asynchrone) ; HTTPS (« tls ») pour les mises à jour
+# publiées sur GitHub.
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
+# Mises à jour : empreinte SHA-256 et archive .zip de la version publiée, remplacement de l'exe.
+sha2 = "0.10"
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+self-replace = "1.5.0"
 urlencoding = "2.1.3"
+# Images de profil des comptes de synchro, envoyées par l'agent en base64.
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
+# Instance unique : identifiant Windows de la fenêtre, pour la ramener au premier plan.
+raw-window-handle = "0.6"
 # Langue de Windows (choix « Langue du système »).
 # Glisser vers l'Explorateur et le Bureau : glisser-déposer OLE (voir src/ole_drag.rs) ;
 # nom des disques (src/drives.rs).
@@ -36,7 +50,14 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Ole",
     "Win32_System_SystemServices",
     "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Shell",
 ] }
 # Fenêtres « Ouvrir » et « Choisir un dossier » de Windows (envoi, téléchargement).
 rfd = "0.15"
+
+[build-dependencies]
+# Icône du fichier .exe (Explorateur Windows), à partir de assets/logo.ico.
+winresource = "0.1"

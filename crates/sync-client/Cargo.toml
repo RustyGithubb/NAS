@@ -5,6 +5,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+# Bibliothèque intégrée aux apps à la compilation : rien à publier dans les releases.
+[package.metadata.dist]
+dist = false
+
 [dependencies]
 nas-proto = { path = "../proto" }
 # Chiffrement : clé dérivée du mot de passe (Argon2id), contenu en AES-256-GCM, noms en HMAC-SHA256.

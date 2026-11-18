@@ -235,7 +235,7 @@ pub fn login_result(c: &Connection, id: u64, ok: bool) {
 pub fn users(c: &Connection) -> rusqlite::Result<Vec<UserInfo>> {
     let mut st = c.prepare(
         "SELECT id, login, active, auth_hash IS NULL, invite_expires, created, last_seen, failures,
-                EXISTS (SELECT 1 FROM avatars WHERE avatars.user = users.id)
+                (SELECT updated FROM avatars WHERE avatars.user = users.id)
          FROM users ORDER BY login",
     )?;
     let rows = st.query_map([], |r| {
@@ -250,7 +250,7 @@ pub fn users(c: &Connection) -> rusqlite::Result<Vec<UserInfo>> {
             failures: r.get(7)?,
             apps: Vec::new(),
             devices: Vec::new(),
-            has_avatar: r.get(8)?,
+            avatar: r.get::<_, Option<i64>>(8)?.map(|v| v as u64),
         })
     })?;
     let mut list = rows.collect::<rusqlite::Result<Vec<_>>>()?;

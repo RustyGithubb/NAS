@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installe sur le Mac mini : le service de l'agent (démarrage automatique), la mise à jour
-# nocturne depuis GitHub et le rallumage après une coupure de courant.
+# nocturne depuis les versions publiées sur GitHub et le rallumage après une coupure de courant.
 # Usage, depuis le dépôt cloné : sudo sh deploy/install.sh
 set -eu
 cd "$(dirname "$0")"
@@ -10,8 +10,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# setpci (rallumage), curl (vérifications GitHub), git.
-apt-get install -y pciutils curl git
+# setpci (rallumage) ; curl, tar et xz-utils (téléchargement et décompression des versions publiées).
+apt-get install -y pciutils curl tar xz-utils
 
 install -m 755 nas-agent-update.sh /usr/local/sbin/nas-agent-update
 install -m 644 nas-agent.service nas-agent-update.service nas-agent-update.timer nas-autopoweron.service /etc/systemd/system/

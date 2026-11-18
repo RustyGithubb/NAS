@@ -530,7 +530,8 @@ pub struct UpdateStatus {
     /// Explication en une phrase, écrite par le script.
     #[serde(default)]
     pub message: String,
-    /// Version (commit Git abrégé) en service.
+    /// Version de l'agent en service (ex. « 0.1.0 » ; commit Git abrégé pour un agent compilé sur
+    /// le serveur avant les versions publiées). Nom de champ gardé pour la compatibilité.
     #[serde(default)]
     pub commit: String,
     /// Date de la dernière recherche (ms depuis 1970).

@@ -171,7 +171,7 @@ fn network(ui: &mut egui::Ui, server: &Server, net: &Option<Result<Network, NetE
         Some(Err(NetError::Outdated)) => {
             widgets::pane_title(ui, t!("Réseau", "Network"), |_| {});
             ui.add_space(24.0);
-            widgets::empty_state(ui, t!("Agent trop ancien", "Agent too old"), t!("Mets-le à jour : Réglages › Serveur › Rechercher", "Update it: Settings › Server › Check now"));
+            widgets::empty_state(ui, t!("Agent trop ancien", "Agent too old"), t!("Mets-le à jour : Compte › Agent › Rechercher", "Update it: Account › Agent › Check now"));
             return;
         }
         Some(Err(NetError::Other(e))) => {

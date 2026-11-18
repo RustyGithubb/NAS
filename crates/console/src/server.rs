@@ -33,7 +33,7 @@ pub enum Link {
     /// Agent joignable, mais la clé d'accès est absente ou fausse.
     Denied,
     /// Agent joignable, mais d'une autre version du protocole : versions (agent, console). Seule
-    /// sa mise à jour (Réglages › Serveur) reste possible.
+    /// sa mise à jour (Compte › Agent) reste possible.
     Mismatch(u32, u32),
 }
 
@@ -84,6 +84,18 @@ pub struct Shared {
     pub sync_result: Option<(bool, String)>,
     /// Code d'invitation à afficher (nouveau compte ou réinitialisation).
     pub sync_invite: Option<nas_proto::sync::Invitation>,
+    /// Images de profil des comptes : compte → (date de l'image, état).
+    sync_avatars: HashMap<u64, (u64, SyncAvatar)>,
+}
+
+/// Image de profil d'un compte de synchro, côté console.
+enum SyncAvatar {
+    Loading,
+    Ready(egui::TextureHandle),
+    /// Absente ou illisible (initiales à la place).
+    Missing,
+    /// Agent injoignable : nouvel essai 30 s plus tard.
+    Failed(Instant),
 }
 
 /// Réseau illisible : agent trop ancien (route absente) ou autre erreur.
@@ -908,6 +920,60 @@ impl Server {
             }
             ctx.request_repaint();
         });
+    }
+
+    /// Image de profil d'un compte (`updated` : date de l'image donnée par l'agent). Demandée en
+    /// arrière-plan la première fois, puis à chaque nouvelle date ; `None` tant qu'elle n'est pas
+    /// arrivée, ou s'il n'y en a pas.
+    pub fn sync_avatar(&self, user: u64, updated: u64) -> Option<egui::TextureHandle> {
+        let to = {
+            let mut s = self.data();
+            match s.sync_avatars.get(&user) {
+                Some((date, SyncAvatar::Failed(at))) if *date == updated && at.elapsed() < Duration::from_secs(30) => return None,
+                Some((date, state)) if *date == updated && !matches!(state, SyncAvatar::Failed(_)) => {
+                    return match state {
+                        SyncAvatar::Ready(t) => Some(t.clone()),
+                        _ => None,
+                    };
+                }
+                _ => {}
+            }
+            s.sync_avatars.insert(user, (updated, SyncAvatar::Loading));
+            Target::of(&s)
+        };
+        let (shared, agent, ctx) = (self.shared.clone(), self.agent.clone(), self.ctx.clone());
+        std::thread::spawn(move || {
+            use base64::Engine;
+            let state = match to.request(&agent, "GET", &format!("/api/sync/users/{user}/avatar")).call() {
+                Ok(r) => {
+                    let image = r
+                        .into_json::<serde_json::Value>()
+                        .ok()
+                        .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v.get("png")?.as_str()?).ok())
+                        .and_then(|png| image::load_from_memory(&png).ok())
+                        .map(|img| {
+                            let img = img.to_rgba8();
+                            egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw())
+                        });
+                    match image {
+                        Some(ci) => SyncAvatar::Ready(ctx.load_texture(format!("sync_avatar_{user}"), ci, egui::TextureOptions::LINEAR)),
+                        None => SyncAvatar::Missing,
+                    }
+                }
+                // Pas d'image sur le serveur (ou agent trop ancien) : initiales.
+                Err(ureq::Error::Status(404, _)) => SyncAvatar::Missing,
+                Err(_) => SyncAvatar::Failed(Instant::now()),
+            };
+            let mut s = lock(&shared);
+            if !to.current(&s) {
+                // Autre agent choisi entre-temps : redemandé auprès du nouveau.
+                s.sync_avatars.remove(&user);
+            } else if s.sync_avatars.get(&user).is_some_and(|(d, _)| *d == updated) {
+                s.sync_avatars.insert(user, (updated, state));
+            }
+            ctx.request_repaint();
+        });
+        None
     }
 
     /// Action d'administration de la synchronisation (`/api/sync/…`, corps JSON facultatif).

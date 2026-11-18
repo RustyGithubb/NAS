@@ -4,6 +4,11 @@ description = "Agent installé sur le serveur (Linux)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+
+# Release : agent publié pour le Mac mini (Linux x86_64, archive .tar.xz + empreinte).
+[package.metadata.dist]
+targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
 nas-proto = { path = "../proto" }

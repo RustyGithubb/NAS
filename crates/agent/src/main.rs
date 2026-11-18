@@ -68,7 +68,7 @@ fn main() {
     let mode = if backend.simulated() { "services simulés" } else { "services systemd" };
     println!("NAS agent v{} — à l'écoute sur http://{addr} ({mode})", env!("CARGO_PKG_VERSION"));
     if new {
-        println!("Nouvelle clé d'accès (à copier dans la console, Réglages › Serveur) :\n  {key}");
+        println!("Nouvelle clé d'accès (à copier dans la console, Compte › Clé d'accès) :\n  {key}");
     }
     let file = key::path();
     println!("Clé d'accès : {} (affichable avec --show-key)", file.canonicalize().unwrap_or(file).display());

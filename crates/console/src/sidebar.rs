@@ -26,7 +26,7 @@ pub fn show(ctx: &egui::Context, window: Rect, current: Tab) -> Option<Tab> {
     let pill_h = inner_h + 16.0;
     // Centrée, sans jamais chevaucher la pilule du bas.
     let max_y = window.bottom() - 2.0 * SCREEN_MARGIN - BOTTOM_H - pill_h;
-    let y = (window.center().y - pill_h / 2.0).min(max_y).max(window.top() + SCREEN_MARGIN);
+    let y = (window.center().y - pill_h / 2.0).min(max_y).max(window.top() + ACCOUNT_TOP + ACCOUNT_H + SCREEN_MARGIN);
     let pos = Pos2::new(window.left() + SCREEN_MARGIN, y);
 
     let mut clicked = None;
@@ -56,8 +56,9 @@ pub fn show(ctx: &egui::Context, window: Rect, current: Tab) -> Option<Tab> {
     clicked
 }
 
-/// Pilule Réglages, ancrée en bas à gauche. Renvoie l'onglet cliqué.
-pub fn bottom_buttons(ctx: &egui::Context, window: Rect, current: Tab) -> Option<Tab> {
+/// Pilule Réglages, ancrée en bas à gauche. `dot` : pastille « mise à jour disponible » sur
+/// Réglages (comme WorkTable). Renvoie l'onglet cliqué.
+pub fn bottom_buttons(ctx: &egui::Context, window: Rect, current: Tab, dot: bool) -> Option<Tab> {
     let pos = Pos2::new(window.left() + SCREEN_MARGIN, window.bottom() - SCREEN_MARGIN - BOTTOM_H);
     let mut clicked = None;
     egui::Area::new(egui::Id::unique("nas_settings")).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
@@ -65,12 +66,57 @@ pub fn bottom_buttons(ctx: &egui::Context, window: Rect, current: Tab) -> Option
             ui.set_width(BUTTON);
             ui.spacing_mut().item_spacing.y = 8.0;
             let mut hl = Liquid::begin(ui, "sidebar_settings");
+            let mut dot_rect = None;
             for tab in BOTTOM {
-                if nav_button(ui, tab, tab == current, &mut hl).clicked() {
+                let r = nav_button(ui, tab, tab == current, &mut hl);
+                if r.clicked() {
                     clicked = Some(tab);
+                }
+                if tab == Tab::Settings && dot {
+                    dot_rect = Some(r.rect);
                 }
             }
             hl.end(ui, theme::TEXT(), BUTTON / 2.0);
+            if let Some(r) = dot_rect {
+                ui.painter().circle(r.right_top() + vec2(-5.0, 5.0), 5.0, theme::TODAY(), Stroke::new(1.5, theme::SIDEBAR_BG()));
+            }
+        });
+    });
+    clicked
+}
+
+/// Haut de la pilule Compte : à hauteur des en-têtes de page.
+const ACCOUNT_TOP: f32 = 36.0;
+/// Hauteur de la pilule Compte : un rond de la largeur des pilules.
+const ACCOUNT_H: f32 = PILL_WIDTH;
+
+/// Pilule « Compte », en haut à gauche, au premier plan (comme WorkTable) : image ronde dessinée
+/// par `paint` (centre, rayon), pastille d'état `dot` en bas à droite. `open` : panneau Compte
+/// ouvert (anneau). Renvoie `true` au clic.
+pub fn account_button(ctx: &egui::Context, window: Rect, open: bool, paint: impl FnOnce(&Painter, Pos2, f32), dot: impl FnOnce(&Painter, Pos2)) -> bool {
+    let pos = Pos2::new(window.left() + SCREEN_MARGIN, window.top() + ACCOUNT_TOP);
+    let mut clicked = false;
+    egui::Area::new(egui::Id::unique("nas_account")).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+        // L'image remplit toute la pastille (même taille et même ombre que les autres pilules).
+        pill_frame().inner_margin(Margin::ZERO).show(ui, |ui| {
+            let (rect, resp) = ui.allocate_exact_size(vec2(PILL_WIDTH, ACCOUNT_H), Sense::click());
+            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(t!("Compte", "Account"));
+            let phase = click_phase(ui, "account", resp.clicked());
+            let press = 1.0 - 0.09 * (std::f32::consts::PI * phase.min(1.0)).sin().max(0.0) * (1.0 - phase).max(0.0).sqrt();
+            paint(ui.painter(), rect.center(), PILL_WIDTH / 2.0 * press);
+            let ring = if open {
+                theme::TEXT()
+            } else if resp.hovered() {
+                theme::TEXT_MUTED()
+            } else {
+                theme::BORDER()
+            };
+            ui.painter().circle_stroke(rect.center(), PILL_WIDTH / 2.0 - 0.5, Stroke::new(if open { 2.0 } else { 1.0 }, ring));
+            // Pastille d'état sur le bord, en bas à droite (45°).
+            let at = rect.center() + vec2(1.0, 1.0) * (PILL_WIDTH / 2.0 - 4.0) * std::f32::consts::FRAC_1_SQRT_2;
+            ui.painter().circle_filled(at, 7.0, theme::SIDEBAR_BG());
+            dot(ui.painter(), at);
+            clicked = resp.clicked();
         });
     });
     clicked

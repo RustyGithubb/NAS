@@ -1,7 +1,7 @@
-//! Mise à jour de l'agent depuis GitHub. Le travail est fait par le service systemd
-//! `nas-agent-update` (script `deploy/nas-agent-update.sh`, lancé chaque nuit par un timer) : il
-//! compile la nouvelle version, l'installe et redémarre l'agent. L'agent se contente de le
-//! lancer à la demande de la console et de lire le résultat qu'il écrit.
+//! Mise à jour de l'agent depuis les versions publiées sur GitHub. Le travail est fait par le
+//! service systemd `nas-agent-update` (script `deploy/nas-agent-update.sh`, lancé chaque nuit par
+//! un timer) : il télécharge la dernière version publiée, l'installe et redémarre l'agent.
+//! L'agent se contente de le lancer à la demande de la console et de lire le résultat qu'il écrit.
 
 use std::path::Path;
 use std::process::Command;
@@ -44,7 +44,7 @@ impl Updater {
         st
     }
 
-    /// Lance une recherche (sans attendre la fin : la compilation peut prendre des minutes).
+    /// Lance une recherche (sans attendre la fin : le téléchargement peut prendre un moment).
     pub fn start(&self) -> Result<(), String> {
         if let Some(m) = &self.mock {
             let m = m.clone();

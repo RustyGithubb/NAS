@@ -58,6 +58,10 @@ pub struct NasApp {
     key: String,
     /// Erreur à l'enregistrement de la clé.
     key_error: Option<String>,
+    /// Panneau Compte (paramètres du serveur et de l'accès à l'agent).
+    account: crate::account_panel::AccountPanel,
+    /// Mises à jour de la console (versions publiées sur GitHub).
+    update: crate::update::Updater,
     services: tabs::services::State,
     sites: tabs::sites::State,
     sync: tabs::sync::State,
@@ -88,6 +92,9 @@ impl NasApp {
         theme::set_fonts(ctx, &prefs.fonts);
         let key = crate::secret::load();
         let server = Server::start(ctx, &prefs.agent_addr, &key);
+        // Nouvelle version cherchée au lancement (pastille sur Réglages si elle existe).
+        let update = crate::update::Updater::default();
+        update.check(ctx);
         NasApp {
             current: Tab::Dashboard,
             prefs,
@@ -95,6 +102,8 @@ impl NasApp {
             server,
             key,
             key_error: None,
+            account: Default::default(),
+            update,
             services: Default::default(),
             sites: Default::default(),
             sync: Default::default(),
@@ -238,7 +247,7 @@ impl eframe::App for NasApp {
                 }
                 self.detach(out);
             }
-            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link, &self.server),
+            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &self.update),
         });
         // « Journal » cliqué sur un service : ouvre son journal.
         if let Some(unit) = open_logs {
@@ -247,9 +256,16 @@ impl eframe::App for NasApp {
         }
 
         // Barre latérale et pilule du bas, au premier plan.
-        if let Some(t) = sidebar::show(ui.ctx(), window, self.current).or(sidebar::bottom_buttons(ui.ctx(), window, self.current)) {
+        if let Some(t) = sidebar::show(ui.ctx(), window, self.current).or(sidebar::bottom_buttons(ui.ctx(), window, self.current, self.update.badge())) {
             self.current = t;
         }
+        // Pastille Compte : initiales du nom déclaré par l'agent, pastille d'état de la liaison.
+        let name = self.account.name(&link).to_string();
+        let open = self.account.is_open();
+        if sidebar::account_button(ui.ctx(), window, open, |p, c, r| crate::account_panel::paint_identity(p, c, r, &name), |p, c| crate::account_panel::paint_dot(p, c, &link)) {
+            self.account.toggle(ui.ctx(), &self.prefs, &self.key);
+        }
+        self.account.show(ui.ctx(), &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link, &self.server);
         titlebar::show(ui.ctx(), window);
         if self.prefs.files_floating {
             self.files_window(ui.ctx(), &link);

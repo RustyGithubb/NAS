@@ -1,3 +1,6 @@
 /target
 # Données locales en développement (réglages, clés) : personnelles, jamais publiées.
 /data/
+
+# Installeur construit par installer/build.ps1
+/installer/Output/

@@ -7,6 +7,13 @@ members = ["crates/console", "crates/agent", "crates/proto", "crates/sync-client
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.95"
+# Adresse du dépôt : les releases (console et agent) y sont publiées par `dist`.
+repository = "https://github.com/RustyGithubb/NAS"
 
 [profile.release]
 strip = true
+
+# Profil des versions publiées (`dist`) : optimisations à l'édition de liens.
+[profile.dist]
+inherits = "release"
+lto = "thin"

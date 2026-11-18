@@ -117,7 +117,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
             widgets::pane(ui, |ui| {
                 ui.add_space(40.0);
                 let hint = if e.contains("route inconnue") {
-                    t!("Agent trop ancien : mets-le à jour (Réglages › Serveur › Rechercher)", "Agent too old: update it (Settings › Server › Check now)").to_string()
+                    t!("Agent trop ancien : mets-le à jour (Compte › Agent › Rechercher)", "Agent too old: update it (Account › Agent › Check now)").to_string()
                 } else {
                     e
                 };
@@ -163,7 +163,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
 
     widgets::pane_columns(ui, &[widgets::SIDE_W], |i, ui| {
         if i == 0 {
-            sidebar(ui, st, &ov);
+            sidebar(ui, st, server, &ov);
             return;
         }
         egui::ScrollArea::vertical().id_salt("sync_detail").auto_shrink([false, false]).show(ui, |ui| {
@@ -198,7 +198,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut State, server: &Server, link: &Link, add
 
 // ───────────────────────────── Colonne de gauche ─────────────────────────────
 
-fn sidebar(ui: &mut egui::Ui, st: &mut State, ov: &Overview) {
+fn sidebar(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview) {
     let mut hl = Liquid::begin(ui, "sync_nav");
     widgets::side_label(ui, t!("Vue", "View"));
     let alerts = !ov.alerts.is_empty();
@@ -236,13 +236,15 @@ fn sidebar(ui: &mut egui::Ui, st: &mut State, ov: &Overview) {
     widgets::side_label(ui, t!("Comptes", "Accounts"));
     for u in &ov.users {
         let (pending, active, problem) = (u.pending, u.active, u.failures >= 5);
+        let tex = u.avatar.and_then(|d| server.sync_avatar(u.id, d));
+        let login = u.login.clone();
+        // Image du compte (sinon initiales) ; liseré rouge si problème, estompée si coupé.
         let dot = move |p: &egui::Painter, c: egui::Pos2| {
+            paint_avatar(p, c, 8.0, tex.as_ref(), &login);
             if problem {
-                p.circle_filled(c, 4.0, theme::DANGER());
+                p.circle_stroke(c, 8.5, egui::Stroke::new(1.5, theme::DANGER()));
             } else if !active || pending {
-                p.circle_stroke(c, 3.5, egui::Stroke::new(1.3, theme::TEXT_MUTED()));
-            } else {
-                p.circle_filled(c, 4.0, theme::TEXT());
+                p.circle_filled(c, 8.5, theme::SURFACE().gamma_multiply(0.6));
             }
         };
         let tone = if problem {
@@ -589,6 +591,26 @@ fn user_page(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, 
         server.sync_action(&format!("/api/sync/users/{}/{verb}", u.id), None, msg);
     }
 
+    // Encadré : image de profil envoyée par l'app (sinon initiales).
+    widgets::card(ui, "", 0.0, |ui| {
+        ui.horizontal(|ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+            let tex = u.avatar.and_then(|d| server.sync_avatar(u.id, d));
+            paint_avatar(ui.painter(), r.center(), 32.0, tex.as_ref(), &u.login);
+            ui.add_space(12.0);
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.label(RichText::new(&u.login).font(theme::title_font(18.0)).color(theme::TEXT()));
+                let info = match u.avatar {
+                    Some(d) => tf!("Image de profil envoyée par l'app le {}", "Profile picture sent by the app on {}", date(d)),
+                    None => t!("Pas d'image de profil : initiales", "No profile picture: initials").to_string(),
+                };
+                ui.label(RichText::new(info).small().color(theme::TEXT_FAINT()));
+            });
+        });
+    });
+    ui.add_space(12.0);
+
     widgets::card(ui, "", 0.0, |ui| {
         row(ui, t!("État", "Status"), "", |ui| {
             let (text, color) = if !u.active {
@@ -868,6 +890,21 @@ fn confirm_zone(ui: &mut egui::Ui, st: &mut State, server: &Server, busy: bool, 
     if cancel {
         st.confirm = None;
     }
+}
+
+/// Image ronde d'un compte, centrée sur `c` ; sans image : initiales de l'identifiant.
+fn paint_avatar(p: &egui::Painter, c: egui::Pos2, r: f32, tex: Option<&egui::TextureHandle>, login: &str) {
+    let rect = egui::Rect::from_center_size(c, egui::vec2(2.0 * r, 2.0 * r));
+    if let Some(t) = tex {
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        p.add(egui::epaint::RectShape::filled(rect, egui::CornerRadius::same(r.min(255.0) as u8), egui::Color32::WHITE).with_texture(t.id(), uv));
+        return;
+    }
+    p.circle_filled(c, r, theme::SURFACE_HI());
+    // « jean.dupont » → « JD », « dorian » → « D » ; une seule lettre en petit (liste), lisible.
+    let letters = if r < 12.0 { 1 } else { 2 };
+    let initials: String = login.split(['.', '_', '-']).filter(|w| !w.is_empty()).take(letters).filter_map(|w| w.chars().next()).flat_map(char::to_uppercase).collect();
+    p.text(c, egui::Align2::CENTER_CENTER, initials, theme::editor_font((r * 0.8).max(9.0), true), theme::TEXT());
 }
 
 /// « 1 compte », « 3 comptes ».

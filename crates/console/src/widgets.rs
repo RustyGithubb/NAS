@@ -271,6 +271,55 @@ fn card_inner<R>(ui: &mut egui::Ui, title: &str, min_height: f32, body: impl FnO
         .inner
 }
 
+/// Remet un champ protégé en lecture seule (édition abandonnée, ex. panneau refermé).
+pub fn reset_locked_field(ctx: &egui::Context, salt: &str) {
+    let id = egui::Id::unique(("locked_field", salt));
+    ctx.data_mut(|d| {
+        d.remove::<String>(id);
+        d.remove::<bool>(id.with("focus"));
+    });
+}
+
+/// Champ protégé : lecture seule tant qu'on n'a pas cliqué sur « Éditer » ; « Valider » (ou Entrée)
+/// garde la saisie et renvoie `true`, « Annuler » remet l'ancienne valeur. `password` masque le texte.
+pub fn locked_field(ui: &mut egui::Ui, salt: &str, label: &str, label_w: f32, value: &mut String, hint: &str, password: bool) -> bool {
+    let id = egui::Id::unique(("locked_field", salt));
+    let backup: Option<String> = ui.ctx().data(|d| d.get_temp(id));
+    let mut validated = false;
+    ui.horizontal(|ui| {
+        ui.add_sized([label_w, 24.0], egui::Label::new(RichText::new(label).color(theme::TEXT_MUTED())));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match &backup {
+            None => {
+                if ui.button(t!("Éditer", "Edit")).clicked() {
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(id, value.clone());
+                        d.insert_temp(id.with("focus"), true);
+                    });
+                }
+                ui.add(egui::TextEdit::singleline(value).hint_text(hint).password(password).interactive(false).desired_width(ui.available_width()));
+            }
+            Some(old) => {
+                let cancel = ui.button(t!("Annuler", "Cancel")).clicked();
+                let save = ui.button(t!("Valider", "Save")).clicked();
+                let r = ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(ui.available_width()));
+                // Première image en édition : le curseur est déjà dans le champ.
+                if ui.ctx().data_mut(|d| d.remove_temp::<bool>(id.with("focus"))).is_some() {
+                    r.request_focus();
+                }
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if cancel {
+                    *value = old.clone();
+                    ui.ctx().data_mut(|d| d.remove::<String>(id));
+                } else if save || enter {
+                    ui.ctx().data_mut(|d| d.remove::<String>(id));
+                    validated = true;
+                }
+            }
+        });
+    });
+    validated
+}
+
 /// Sélecteur segmenté : la pastille de sélection glisse (animation liquide) d'une option à l'autre.
 pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, salt: &str, options: &[(T, &str)], value: &mut T) -> bool {
     let mut changed = false;

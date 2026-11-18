@@ -279,10 +279,10 @@ pub struct UserInfo {
     pub devices: Vec<Device>,
     /// Échecs de connexion depuis la dernière réussite.
     pub failures: u32,
-    /// Image de profil envoyée par une app (copie en clair, `/api/sync/users/{id}/avatar`).
-    /// `serde(default)` : agent plus ancien = pas d'image.
+    /// Date de l'image de profil envoyée par une app (copie en clair,
+    /// `/api/sync/users/{id}/avatar`) ; `None` : pas d'image (ou agent plus ancien).
     #[serde(default)]
-    pub has_avatar: bool,
+    pub avatar: Option<u64>,
 }
 
 /// Accès d'un compte à une app.
