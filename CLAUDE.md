@@ -19,7 +19,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - En-tête : `tabs::header(sur-titre, titre, info, accent)` (→ `widgets::page_header_with`).
 - Contenu : panneaux pleine hauteur avec `widgets::pane_columns` ; colonne de gauche `widgets::SIDE_W` (260 px) avec `side_label` + `nav_row` (pastille liquide), puis liste (`pane_title`, `list_item`) et/ou détail.
 - États vides : `widgets::empty_state` ; agent indisponible : `tabs::unavailable`.
-- Réglages : seule exception, colonne de cartes de 760 px qui défile.
+- Réglages : pas un onglet, mais un panneau superposé façon Ctrl+Espace (`tabs::settings::SettingsPanel`, sur `overlay.rs`), ouvert/fermé par la pilule ⚙️ seulement ; sections via `group` (filet + titre en gras), aucune carte.
 
 ## Économie de tokens
 - Ne lis pas Cargo.lock, target/, data/.
@@ -51,7 +51,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - server.rs : liaison avec l'agent (état + services toutes les 2 s ; actions, journaux, fichiers et transferts dans des fils à part ; téléchargements dans Téléchargements\NAS)
 - update.rs : mise à jour de la console depuis les releases GitHub (archive `nas-console-x86_64-pc-windows-msvc.zip` + SHA-256, self-replace ; désactivé en debug) ; carte dans Réglages › Général, pastille sur Réglages
 - icons.rs : émojis Twemoji (assets/emoji, CC-BY 4.0) par type de fichier et par emplacement
-- tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (explorateur façon Windows : onglets, barre d'adresse et de commandes, Accueil, Galerie, Détails, liste / grandes icônes, recherche instantanée, presse-papiers, épinglés, « Ce PC », glisser-déposer serveur ↔ PC, onglet Transferts), settings.rs (réglages sans le serveur, passé dans account_panel.rs)
+- tabs/ : mod.rs (en-tête, agent indisponible, lignes de détail), dashboard.rs, services.rs, sites.rs, logs.rs, files.rs (explorateur façon Windows : onglets, barre d'adresse et de commandes, Accueil, Galerie, Détails, liste / grandes icônes, recherche instantanée, presse-papiers, épinglés, « Ce PC », glisser-déposer serveur ↔ PC, onglet Transferts), settings.rs (panneau Réglages, pilule ⚙️ ; sans le serveur, passé dans account_panel.rs)
 - Racine (hors crates) : dist-workspace.toml + .github/workflows/release.yml (cargo-dist 0.32.0 ; tag vX.Y.Z → console Windows .zip et agent Linux .tar.xz), installer/ (NAS.iss, build.ps1 → installer\Output\NAS-<version>-setup.exe)
 
 ## Agent (crates/agent/src)

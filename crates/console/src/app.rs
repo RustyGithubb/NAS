@@ -60,6 +60,8 @@ pub struct NasApp {
     key_error: Option<String>,
     /// Panneau Compte (paramètres du serveur et de l'accès à l'agent).
     account: crate::account_panel::AccountPanel,
+    /// Panneau Réglages (clic sur la pilule ⚙️).
+    settings: tabs::settings::SettingsPanel,
     /// Mises à jour de la console (versions publiées sur GitHub).
     update: crate::update::Updater,
     services: tabs::services::State,
@@ -103,6 +105,7 @@ impl NasApp {
             key,
             key_error: None,
             account: Default::default(),
+            settings: Default::default(),
             update,
             services: Default::default(),
             sites: Default::default(),
@@ -247,7 +250,8 @@ impl eframe::App for NasApp {
                 }
                 self.detach(out);
             }
-            Tab::Settings => tabs::settings::show(ui, &mut self.prefs, &self.update),
+            // Les Réglages sont un panneau superposé (pilule ⚙️), jamais l'onglet affiché.
+            Tab::Settings => {}
         });
         // « Journal » cliqué sur un service : ouvre son journal.
         if let Some(unit) = open_logs {
@@ -256,8 +260,11 @@ impl eframe::App for NasApp {
         }
 
         // Barre latérale et pilule du bas, au premier plan.
-        if let Some(t) = sidebar::show(ui.ctx(), window, self.current).or(sidebar::bottom_buttons(ui.ctx(), window, self.current, self.update.badge())) {
-            self.current = t;
+        // ⚙️ ouvre ou ferme le panneau Réglages (pas un onglet).
+        match sidebar::show(ui.ctx(), window, self.current).or(sidebar::bottom_buttons(ui.ctx(), window, self.current, self.update.badge())) {
+            Some(Tab::Settings) => self.settings.toggle(ui.ctx()),
+            Some(t) => self.current = t,
+            None => {}
         }
         // Pastille Compte : initiales du nom déclaré par l'agent, pastille d'état de la liaison.
         let name = self.account.name(&link).to_string();
@@ -266,6 +273,7 @@ impl eframe::App for NasApp {
             self.account.toggle(ui.ctx(), &self.prefs, &self.key);
         }
         self.account.show(ui.ctx(), &mut self.prefs, &mut self.key, self.key_error.as_deref(), &link, &self.server);
+        self.settings.show(ui.ctx(), &mut self.prefs, &self.update);
         titlebar::show(ui.ctx(), window);
         if self.prefs.files_floating {
             self.files_window(ui.ctx(), &link);

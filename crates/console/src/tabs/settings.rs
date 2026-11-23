@@ -3,29 +3,122 @@
 
 use eframe::egui::{self, RichText};
 
-use super::header;
 use crate::liquid::Liquid;
+use crate::overlay::{Backdrop, overlay_frame};
 use crate::prefs::{Animation, Curve, Prefs};
 use crate::{theme, widgets};
 
-pub fn show(ui: &mut egui::Ui, prefs: &mut Prefs, update: &crate::update::Updater) {
-    header(ui, t!("Application", "Application"), t!("Réglages", "Settings"), "", false);
-    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        let width = ui.available_width().min(760.0);
-        ui.allocate_ui(egui::vec2(width, 0.0), |ui| {
-            general(ui, prefs, update);
-            themes(ui, prefs);
-            fonts(ui, prefs);
-            animations(ui, prefs);
-            section(ui, t!("À propos", "About"), &[("Version", t!("Console NAS", "NAS console"), Value::Text(env!("CARGO_PKG_VERSION")))]);
-        });
-    });
+/// Panneau Réglages (clic sur la pilule ⚙️) : même boîte que le panneau Compte, sur fond
+/// flouté ; fermé par Échap ou un clic à côté (la pilule comprise).
+#[derive(Default)]
+pub struct SettingsPanel {
+    open: bool,
+    bg: Backdrop,
+    /// Remettre le défilement en haut (ouverture).
+    scroll_top: bool,
+    /// Faire passer le fond devant les pilules (ouverture).
+    raise: bool,
+}
+
+impl SettingsPanel {
+    /// Ouvert et pas en train de disparaître.
+    pub fn is_open(&self) -> bool {
+        self.open && !self.bg.is_closing()
+    }
+
+    pub fn toggle(&mut self, ctx: &egui::Context) {
+        if self.is_open() {
+            self.bg.close(ctx);
+        } else {
+            self.open = true;
+            self.scroll_top = true;
+            self.raise = true;
+            self.bg.start(ctx);
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context, prefs: &mut Prefs, update: &crate::update::Updater) {
+        if !self.open {
+            return;
+        }
+        // Niveau Foreground : les listes déroulantes (Langue, Polices) s'ouvrent au-dessus du
+        // panneau, pas dessous.
+        let (k, mut close) = self.bg.show_in(ctx, "settings_backdrop", egui::Order::Foreground);
+        let closing = self.bg.is_closing();
+        // Liste ouverte : Échap et le clic à côté sont pour elle.
+        if egui::Popup::is_any_open(ctx) {
+            close = false;
+        } else if !closing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            close = true;
+        }
+
+        let screen = ctx.content_rect();
+        // Même écart à gauche et à droite : 16 % de la largeur de la fenêtre (comme le haut et le
+        // bas, 16 % de la hauteur). Même haut que la recherche Ctrl+Espace de WorkTable.
+        let w = screen.width() * (1.0 - 2.0 * 0.16);
+        let top = screen.top() + screen.height() * 0.16 - (1.0 - k) * 12.0;
+        // Pendant la disparition, la boîte ne réagit plus aux clics.
+        egui::Area::new(egui::Id::unique("settings_box")).order(egui::Order::Foreground).fixed_pos(egui::pos2(screen.center().x - w / 2.0, top)).interactable(!closing).show(
+            ctx,
+            |ui| {
+                ui.multiply_opacity(k);
+                overlay_frame().show(ui, |ui| {
+                    ui.set_width(w - 28.0);
+                    // En-tête fixe.
+                    ui.label(RichText::new(t!("Application", "Application")).small().color(theme::TEXT_FAINT()));
+                    ui.label(RichText::new(t!("Réglages", "Settings")).font(theme::title_font(18.0)).color(theme::TEXT()));
+                    // Étiré vers le bas : même écart sous le panneau qu'au-dessus, quelle que soit la
+                    // hauteur de la fenêtre (14 px : marge du cadre).
+                    let bottom = screen.bottom() - screen.height() * 0.16;
+                    let h = (bottom - 14.0 - ui.cursor().top()).max(120.0);
+                    let mut scroll = egui::ScrollArea::vertical().min_scrolled_height(h).max_height(h).auto_shrink([false, false]);
+                    // Réouverture : de nouveau en haut.
+                    if std::mem::take(&mut self.scroll_top) {
+                        scroll = scroll.vertical_scroll_offset(0.0);
+                    }
+                    scroll.show(ui, |ui| {
+                        general(ui, prefs, update);
+                        themes(ui, prefs);
+                        fonts(ui, prefs);
+                        animations(ui, prefs);
+                        section(ui, t!("À propos", "About"), &[("Version", t!("Console NAS", "NAS console"), Value::Text(env!("CARGO_PKG_VERSION")))]);
+                    });
+                });
+            },
+        );
+        let backdrop = egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("settings_backdrop"));
+        // À l'ouverture, le fond passe devant les pilules (même niveau) ; ensuite les listes
+        // déroulantes ouvertes plus tard restent devant lui.
+        if std::mem::take(&mut self.raise) {
+            ctx.move_to_top(backdrop);
+        }
+        // La boîte reste juste au-dessus de son fond, même après un clic sur le fond.
+        ctx.set_sublayer(backdrop, egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("settings_box")));
+        if close {
+            self.bg.close(ctx);
+        }
+        // Fin de la disparition : le panneau est retiré.
+        if self.bg.is_closed() {
+            self.open = false;
+            self.bg.clear();
+        }
+    }
+}
+
+/// Section des Réglages : filet `BORDER` (8 px avant et après), titre en gras, contenu.
+fn group<R>(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.add_space(8.0);
+    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), egui::Stroke::new(1.0, theme::BORDER()));
+    ui.add_space(8.0);
+    ui.label(RichText::new(title).strong().color(theme::TEXT()));
+    ui.add_space(4.0);
+    body(ui)
 }
 
 /// Langue de l'interface et mises à jour de la console.
 fn general(ui: &mut egui::Ui, prefs: &mut Prefs, update: &crate::update::Updater) {
     use crate::i18n::Language;
-    widgets::card(ui, t!("Général", "General"), 0.0, |ui| {
+    group(ui, t!("Général", "General"), |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(t!("Langue", "Language"));
@@ -44,7 +137,6 @@ fn general(ui: &mut egui::Ui, prefs: &mut Prefs, update: &crate::update::Updater
         ui.add_space(4.0);
         updates(ui, update);
     });
-    ui.add_space(12.0);
 }
 
 /// Mises à jour de la console : vérifier sur GitHub, installer, redémarrer (comme WorkTable).
@@ -107,7 +199,7 @@ fn updates(ui: &mut egui::Ui, update: &crate::update::Updater) {
 /// Choix du thème (12 thèmes), chacun montré par un aperçu de ses couleurs.
 fn themes(ui: &mut egui::Ui, prefs: &mut Prefs) {
     use crate::theme::{ThemeId, rgb};
-    widgets::card(ui, t!("Apparence", "Appearance"), 0.0, |ui| {
+    group(ui, t!("Apparence", "Appearance"), |ui| {
         ui.label(
             RichText::new(t!("Thème de couleurs, appliqué immédiatement à toute l'application.", "Colour theme, applied immediately to the whole app."))
                 .small()
@@ -156,13 +248,12 @@ fn themes(ui: &mut egui::Ui, prefs: &mut Prefs) {
             ui.add_space(gap);
         }
     });
-    ui.add_space(12.0);
 }
 
 /// Police et taille de chaque groupe de textes, avec aperçu.
 fn fonts(ui: &mut egui::Ui, prefs: &mut Prefs) {
     use crate::theme::{FontChoice, FontGroup, FontPrefs};
-    widgets::card(ui, t!("Polices", "Fonts"), 0.0, |ui| {
+    group(ui, t!("Polices", "Fonts"), |ui| {
         ui.label(
             RichText::new(t!(
                 "Chaque groupe de textes a sa police et sa taille, appliquées dans tous les onglets.",
@@ -223,12 +314,11 @@ fn fonts(ui: &mut egui::Ui, prefs: &mut Prefs) {
             *f = FontPrefs::default();
         }
     });
-    ui.add_space(12.0);
 }
 
 /// Réglages de l'animation liquide (sélection d'onglets, de dossiers, de mails…).
 fn animations(ui: &mut egui::Ui, prefs: &mut Prefs) {
-    widgets::card(ui, "Animations", 0.0, |ui| {
+    group(ui, "Animations", |ui| {
         let a = &mut prefs.animation;
         let row = |ui: &mut egui::Ui, label: &str, hint: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
             ui.horizontal(|ui| {
@@ -263,7 +353,6 @@ fn animations(ui: &mut egui::Ui, prefs: &mut Prefs) {
             *a = Animation::default();
         }
     });
-    ui.add_space(12.0);
 }
 
 fn preview(ui: &mut egui::Ui) {
@@ -292,7 +381,7 @@ fn preview(ui: &mut egui::Ui) {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str, Value)]) {
-    widgets::card(ui, title, 0.0, |ui| {
+    group(ui, title, |ui| {
         for (i, (label, hint, value)) in rows.iter().enumerate() {
             if i > 0 {
                 ui.add_space(4.0);
@@ -312,7 +401,6 @@ fn section(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str, Value)]) {
             });
         }
     });
-    ui.add_space(12.0);
 }
 
 enum Value {

@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "nas-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "base64",
@@ -2317,7 +2317,7 @@ dependencies = [
 
 [[package]]
 name = "nas-console"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "chrono",
@@ -2342,14 +2342,14 @@ dependencies = [
 
 [[package]]
 name = "nas-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "nas-sync-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes-gcm",
  "argon2",

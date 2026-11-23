@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 — 2026-11-23
+### Modifications
+- Réglages : ce n'est plus un onglet mais un panneau sur fond flouté, comme le panneau Compte, ouvert et fermé par la pilule ⚙️ (Échap ou un clic à côté le ferment). Les réglages sont en sections séparées par des filets ; le panneau laisse le même écart à gauche et à droite (16 % de la fenêtre).
+
 ## 0.1.0 — 2026-11-18
 ### Ajouts
 - Première version publiée : la console Windows s'installe avec un installeur (icône du logo), et l'agent Linux est construit par GitHub à chaque version publiée.
