@@ -5,13 +5,14 @@ use std::io::Read;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use nas_proto::sync::{
-    self as proto, ActivityKind, AppStatus, ChangePassword, DeviceHello, Login, PublicApp, Pull, Push, PushResult, Register, SYNC_PROTOCOL_VERSION, Salt, Session,
+    self as proto, ActivityKind, AppStatus, ChangePassword, DeviceHello, GoogleAccount, GoogleHello, Login, PublicApp, Pull, Push, PushResult, Register, SYNC_PROTOCOL_VERSION,
+    Salt, Session, valid_install_id,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tiny_http::{Header, Method, Request, Response};
 
-use super::{Sync, db, from_hex, hex, now, random, same, sha256};
+use super::{Sync, db, from_hex, google, hex, now, random, same, sha256};
 
 /// Paramètres Argon2id que les apps utilisent pour dériver leurs clés du mot de passe.
 const KDF_M_KIB: u32 = 64 * 1024;
@@ -107,6 +108,10 @@ fn route(s: &Sync, request: &mut Request) -> Reply {
     let method = request.method().clone();
     match (&method, parts.as_slice()) {
         (Method::Get, ["sync", "auth", "salt"]) => salt(s, &param(query, "login").unwrap_or_default()),
+        (Method::Post, ["sync", "auth", "google"]) => match body::<GoogleHello>(request, 16 * 1024) {
+            Ok(g) => google_account(s, g, &ip),
+            Err(e) => e,
+        },
         (Method::Post, ["sync", "auth", "register"]) => match body::<Register>(request, 64 * 1024) {
             Ok(r) => register(s, r, &ip),
             Err(e) => e,
@@ -119,7 +124,7 @@ fn route(s: &Sync, request: &mut Request) -> Reply {
             let Some(who) = authenticate(s, request, &ip) else { return error(401, "session expirée ou révoquée") };
             match (&method, parts.as_slice()) {
                 (Method::Post, ["sync", "auth", "logout"]) => {
-                    let _ = db::revoke_device(&s.db(), who.device, Some(who.user));
+                    let _ = db::logout_device(&s.db(), who.device, who.user);
                     json(200, &proto::Ok { ok: true })
                 }
                 (Method::Post, ["sync", "auth", "password"]) => match body::<ChangePassword>(request, 64 * 1024) {
@@ -196,6 +201,36 @@ fn salt(s: &Sync, login: &str) -> Reply {
     }
 }
 
+/// Compte lié au jeton Google vérifié. Le `sub` Google est retenu à la première connexion ;
+/// ensuite un autre compte Google qui reprendrait le même e-mail est refusé.
+fn google_linked(s: &Sync, id_token: &str) -> Result<(db::Account, String), String> {
+    let ids = db::google_client_ids(&s.db());
+    let who = google::verify(id_token, &ids)?;
+    let db = s.db();
+    let a = db::account_by_google(&db, &who.email).filter(|a| a.active).ok_or("aucun compte actif n'est lié à cet e-mail Google")?;
+    match &a.google_sub {
+        Some(sub) if !same(sub, &who.sub) => return Err("ce compte Google ne correspond pas au compte lié".into()),
+        Some(_) => {}
+        None => {
+            db::set_google_sub(&db, a.id, &who.sub).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok((a, who.email))
+}
+
+fn google_account(s: &Sync, g: GoogleHello, ip: &str) -> Reply {
+    if throttled(s, ip) {
+        return error(429, "trop d'essais, attendez une minute");
+    }
+    match google_linked(s, &g.id_token) {
+        Ok((a, email)) => json(200, &GoogleAccount { login: a.login, email, salt: Salt { salt: a.salt, m_kib: KDF_M_KIB, t: KDF_T, pending: a.auth_hash.is_none() } }),
+        Err(e) => {
+            failed(s, ip, "google", "", None);
+            error(403, &e)
+        }
+    }
+}
+
 /// Trop d'échecs récents depuis cette adresse ?
 fn throttled(s: &Sync, ip: &str) -> bool {
     let mut f = s.failures.lock().unwrap_or_else(|e| e.into_inner());
@@ -232,7 +267,7 @@ fn check_device(d: &DeviceHello, s: &Sync) -> Result<(), Reply> {
 fn open_session(s: &Sync, user: u64, login: &str, d: &DeviceHello, ip: &str, wrapped_key: String) -> Reply {
     let token = hex(&random(32));
     let db = s.db();
-    match db::add_device(&db, user, d.name.trim(), &d.app, &hex(&sha256(token.as_bytes())), ip) {
+    match db::add_device(&db, user, d.name.trim(), &d.app, Some(d.install_id.as_str()).filter(|i| valid_install_id(i)), &hex(&sha256(token.as_bytes())), ip) {
         Ok(device_id) => {
             db::login_result(&db, user, true);
             drop(db);
@@ -251,16 +286,27 @@ fn register(s: &Sync, r: Register, ip: &str) -> Reply {
         return e;
     }
     let login = r.login.trim().to_lowercase();
-    let account = db::account(&s.db(), &login);
-    let valid = account.as_ref().is_some_and(|a| {
-        a.active
-            && a.auth_hash.is_none()
-            && a.invite_expires.is_some_and(|e| e > now())
-            && a.invite_hash.as_deref().is_some_and(|h| same(h, &hex(&sha256(r.invite.trim().to_uppercase().as_bytes()))))
-    });
-    let Some(a) = account.filter(|_| valid) else {
-        failed(s, ip, &login, &r.device.app, None);
-        return error(403, "code d'invitation invalide ou expiré");
+    // Compte via Google : le jeton d'identité remplace le code d'invitation.
+    let account = if r.id_token.is_empty() {
+        let account = db::account(&s.db(), &login);
+        let valid = account.as_ref().is_some_and(|a| {
+            a.active
+                && a.auth_hash.is_none()
+                && a.invite_expires.is_some_and(|e| e > now())
+                && a.invite_hash.as_deref().is_some_and(|h| same(h, &hex(&sha256(r.invite.trim().to_uppercase().as_bytes()))))
+        });
+        account.filter(|_| valid).ok_or_else(|| "code d'invitation invalide ou expiré".to_string())
+    } else {
+        google_linked(s, &r.id_token)
+            .map(|(a, _)| a)
+            .and_then(|a| if a.login != login || a.auth_hash.is_some() { Err("ce compte est déjà activé : connectez-vous".to_string()) } else { Ok(a) })
+    };
+    let a = match account {
+        Ok(a) => a,
+        Err(e) => {
+            failed(s, ip, &login, &r.device.app, None);
+            return error(403, &e);
+        }
     };
     if db::access(&s.db(), a.id, &r.device.app).is_none() {
         return error(403, "cette app n'est pas autorisée pour ce compte");

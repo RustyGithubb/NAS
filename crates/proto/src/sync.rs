@@ -6,8 +6,16 @@
 //!
 //! Routes publiques (jeton de session `Authorization: Bearer …`, sauf `auth/salt|register|login`) :
 //! - `GET  /sync/auth/salt?login=` → [`Salt`]
-//! - `POST /sync/auth/register` ([`Register`], premier login avec le code d'invitation) → [`Session`]
+//! - `POST /sync/auth/google` ([`GoogleHello`]) → [`GoogleAccount`] (retrouve le compte lié à un e-mail Google)
+//! - `POST /sync/auth/register` ([`Register`], premier login avec le code d'invitation ou le jeton Google) → [`Session`]
 //! - `POST /sync/auth/login` ([`Login`]) → [`Session`]
+//!
+//! Compte « via Google » : Google sert seulement à identifier le compte (plus de code
+//! d'invitation ni d'identifiant à taper). Le mot de passe de chiffrement reste demandé :
+//! le serveur ne peut jamais déchiffrer les données.
+//!
+//! Poste : [`DeviceHello::install_id`] est fixe pour un PC et une app. Un poste qui se
+//! reconnecte reprend sa ligne au lieu d'en créer une ; l'app restaure alors ses documents.
 //! - `POST /sync/auth/logout` → [`Ok`]
 //! - `POST /sync/auth/password` ([`ChangePassword`]) → [`Ok`]
 //! - `GET  /sync/apps` → `Vec<`[`PublicApp`]`>` (apps autorisées pour ce compte)
@@ -74,11 +82,30 @@ pub struct Salt {
     pub pending: bool,
 }
 
+/// Connexion avec Google : jeton d'identité (`id_token` OpenID, scopes `openid email`)
+/// obtenu par l'app. L'agent vérifie sa signature avec les clés publiques de Google.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GoogleHello {
+    pub id_token: String,
+}
+
+/// Compte lié à l'e-mail Google présenté.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GoogleAccount {
+    pub login: String,
+    pub email: String,
+    /// Paramètres de dérivation ; `pending` : premier accès, passer par `register` avec le jeton.
+    pub salt: Salt,
+}
+
 /// Premier login : fixe le mot de passe avec le code d'invitation.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Register {
     pub login: String,
     pub invite: String,
+    /// Compte via Google : jeton d'identité à la place du code d'invitation.
+    #[serde(default)]
+    pub id_token: String,
     /// Clé d'authentification dérivée du mot de passe (hexadécimal, 32 octets).
     pub auth_key: String,
     /// Clé maître du compte, chiffrée par la clé dérivée du mot de passe (base64).
@@ -103,6 +130,15 @@ pub struct DeviceHello {
     /// App qui se connecte.
     pub app: String,
     pub protocol: u32,
+    /// Identifiant fixe du poste pour cette app (32 caractères hexadécimaux, tiré au premier
+    /// lancement et gardé par l'app). Vide : ancien client, nouveau poste à chaque connexion.
+    #[serde(default)]
+    pub install_id: String,
+}
+
+/// `install_id` : 32 caractères hexadécimaux minuscules.
+pub fn valid_install_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 /// Session ouverte.
@@ -225,6 +261,10 @@ pub struct Settings {
     pub enabled: bool,
     /// Adresse publique (`sync.exemple.fr`), affichée aux comptes.
     pub domain: String,
+    /// Identifiants de client OAuth Google acceptés (projet Google Cloud de chaque app),
+    /// comparés au champ `aud` du jeton d'identité. Vide : connexion Google refusée.
+    #[serde(default)]
+    pub google_client_ids: Vec<String>,
 }
 
 /// Une app du répertoire.
@@ -283,6 +323,9 @@ pub struct UserInfo {
     /// `/api/sync/users/{id}/avatar`) ; `None` : pas d'image (ou agent plus ancien).
     #[serde(default)]
     pub avatar: Option<u64>,
+    /// E-mail Google lié (compte « via Google »).
+    #[serde(default)]
+    pub google_email: Option<String>,
 }
 
 /// Accès d'un compte à une app.
@@ -315,6 +358,9 @@ pub struct NewUser {
     pub login: String,
     /// Apps autorisées dès la création.
     pub apps: Vec<String>,
+    /// Compte via Google : e-mail du compte Google existant à lier.
+    #[serde(default)]
+    pub google_email: Option<String>,
 }
 
 /// Code à donner à la personne pour son premier login.

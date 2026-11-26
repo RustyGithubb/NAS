@@ -3,8 +3,14 @@
 //! L'app garde ses fichiers en local et appelle :
 //! - [`Client::register`] (premier login, avec le code d'invitation donné par la console) ou
 //!   [`Client::login`] → une [`Session`] (jeton à ranger dans le coffre du système) ;
+//!   compte « via Google » : [`Client::register_google`] / [`Client::login_google`] avec le
+//!   jeton d'identité Google (`id_token`, scopes `openid email`) obtenu par l'app ;
 //! - [`Client::push`] pour envoyer un fichier modifié (chiffré ici) ;
-//! - [`Client::pull`] puis [`Client::fetch`] pour recevoir ceux des autres postes.
+//! - [`Client::pull`] puis [`Client::fetch`] pour recevoir ceux des autres postes ;
+//! - [`Client::restore`] après une (re)connexion sur un poste sans données locales.
+//!
+//! Poste : l'app tire une fois [`new_install_id`], le garde (fichier ou coffre du système) et le
+//! passe à [`Client::with_install_id`]. Le serveur reconnaît ainsi le poste à chaque connexion.
 //!
 //! Les règles de fusion en cas de conflit appartiennent à l'app.
 //! Bloquant (ureq) : à appeler depuis un fil à part, jamais depuis l'interface.
@@ -13,9 +19,14 @@ pub mod crypto;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
-use nas_proto::sync::{self as proto, DeviceHello, DocMeta, Login, Pull, Push, PushResult, Register, SYNC_PROTOCOL_VERSION, Salt};
+use nas_proto::sync::{self as proto, DeviceHello, DocMeta, GoogleAccount, GoogleHello, Login, Pull, Push, PushResult, Register, SYNC_PROTOCOL_VERSION, Salt};
 
 pub use crypto::{AppKey, MasterKey};
+
+/// Identifiant de poste à tirer une seule fois et à garder (voir [`Client::with_install_id`]).
+pub fn new_install_id() -> String {
+    crypto::hex(&crypto::random::<16>())
+}
 
 /// Session ouverte sur le serveur.
 #[derive(Clone, Debug)]
@@ -62,6 +73,7 @@ pub struct Client {
     device: String,
     agent: ureq::Agent,
     token: Option<String>,
+    install_id: String,
 }
 
 impl Client {
@@ -72,7 +84,14 @@ impl Client {
         if !base.starts_with("http://") && !base.starts_with("https://") {
             base = format!("https://{base}");
         }
-        Client { base, app: app.into(), device: device_name.into(), agent, token: None }
+        Client { base, app: app.into(), device: device_name.into(), agent, token: None, install_id: String::new() }
+    }
+
+    /// Identifiant fixe du poste ([`new_install_id`], gardé par l'app) : une reconnexion reprend
+    /// le même poste sur le serveur au lieu d'en créer un nouveau.
+    pub fn with_install_id(mut self, id: &str) -> Self {
+        self.install_id = id.into();
+        self
     }
 
     /// Délai de connexion plus court (démarrage de l'app : ne pas la faire attendre hors ligne).
@@ -88,7 +107,7 @@ impl Client {
     }
 
     fn hello(&self) -> DeviceHello {
-        DeviceHello { name: self.device.clone(), app: self.app.clone(), protocol: SYNC_PROTOCOL_VERSION }
+        DeviceHello { name: self.device.clone(), app: self.app.clone(), protocol: SYNC_PROTOCOL_VERSION, install_id: self.install_id.clone() }
     }
 
     fn req(&self, method: &str, path: &str) -> ureq::Request {
@@ -107,6 +126,33 @@ impl Client {
     /// montrer une seule fois (seul moyen de relire les données si le mot de passe est perdu).
     pub fn register(&mut self, login: &str, invite: &str, password: &str) -> Result<(Session, String), Error> {
         let salt = self.salt(login)?;
+        self.activate(login, invite, "", &salt, password)
+    }
+
+    /// Compte lié à ce jeton Google (identifiant, adresse, `salt.pending` : premier accès).
+    /// Sert à afficher « Connecté en tant que … » avant de demander le mot de passe.
+    pub fn google_account(&self, id_token: &str) -> Result<GoogleAccount, Error> {
+        json(self.req("POST", "/sync/auth/google").send_json(GoogleHello { id_token: id_token.into() }))
+    }
+
+    /// Premier accès d'un compte via Google (sans code d'invitation) : choisit le mot de passe
+    /// de chiffrement. Renvoie aussi le code de récupération, comme [`Client::register`].
+    pub fn register_google(&mut self, id_token: &str, password: &str) -> Result<(Session, String), Error> {
+        let a = self.google_account(id_token)?;
+        self.activate(&a.login, "", id_token, &a.salt, password)
+    }
+
+    /// Connexion d'un compte via Google : Google retrouve le compte, le mot de passe de
+    /// chiffrement ouvre la clé maître (le serveur ne peut pas lire les données).
+    pub fn login_google(&mut self, id_token: &str, password: &str) -> Result<Session, Error> {
+        let a = self.google_account(id_token)?;
+        if a.salt.pending {
+            return Err(Error::Other("premier accès : choisissez votre mot de passe de chiffrement".into()));
+        }
+        self.login(&a.login, password)
+    }
+
+    fn activate(&mut self, login: &str, invite: &str, id_token: &str, salt: &Salt, password: &str) -> Result<(Session, String), Error> {
         if !salt.pending {
             return Err(Error::Other("ce compte est déjà activé : utilisez « Se connecter »".into()));
         }
@@ -116,6 +162,7 @@ impl Client {
         let body = Register {
             login: login.into(),
             invite: invite.into(),
+            id_token: id_token.into(),
             auth_key: keys.auth_key.clone(),
             wrapped_key: master.wrap(&keys),
             recovery_key: master.wrap_recovery(&recovery),
@@ -173,6 +220,31 @@ impl Client {
             return Err(Error::Other("contenu abîmé pendant le téléchargement".into()));
         }
         Ok(key.decrypt(&data)?)
+    }
+
+    /// Restauration complète (reconnexion d'un poste, ou données locales perdues) : reprend
+    /// tout depuis le début et donne la dernière version de chaque fichier encore présent à
+    /// `each(meta, chemin, contenu)`. Renvoie le curseur à garder pour les `pull` suivants.
+    pub fn restore(&self, key: &AppKey, mut each: impl FnMut(&DocMeta, String, Vec<u8>)) -> Result<u64, Error> {
+        let mut latest: std::collections::HashMap<String, DocMeta> = std::collections::HashMap::new();
+        let mut since = 0;
+        loop {
+            let p = self.pull(since)?;
+            for d in p.docs {
+                if latest.get(&d.doc).is_none_or(|old| d.version > old.version) {
+                    latest.insert(d.doc.clone(), d);
+                }
+            }
+            since = p.cursor;
+            if !p.more {
+                break;
+            }
+        }
+        for meta in latest.values().filter(|m| !m.deleted) {
+            let (path, content) = self.fetch(key, meta)?;
+            each(meta, path, content);
+        }
+        Ok(since)
     }
 
     pub fn status(&self) -> Result<proto::AppStatus, Error> {
@@ -269,5 +341,17 @@ mod tests {
         assert!(Client::new(&server, proto::WORKTABLE, "X").login("test", "mot de passe 1").is_err());
         assert_eq!(Client::new(&server, proto::WORKTABLE, "X").login("test", "mot de passe 2").unwrap().master, s.master);
         assert_eq!(recovery.len(), 29);
+
+        // Reconnexion d'un poste connu : même poste sur le serveur, données restaurées.
+        let id = new_install_id();
+        let mut c = Client::new(&server, proto::WORKTABLE, "PC-TEST-C").with_install_id(&id);
+        let first = c.login("test", "mot de passe 2").unwrap();
+        c.logout().unwrap();
+        let mut c = Client::new(&server, proto::WORKTABLE, "PC-TEST-C").with_install_id(&id);
+        let again = c.login("test", "mot de passe 2").unwrap();
+        assert_eq!(first.device_id, again.device_id);
+        let mut files = Vec::new();
+        c.restore(&again.master.app(proto::WORKTABLE), |_, path, content| files.push((path, content))).unwrap();
+        assert_eq!(files, vec![("notes/Idées.md".to_string(), b"v2".to_vec())]);
     }
 }

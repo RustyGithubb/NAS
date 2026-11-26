@@ -13,6 +13,7 @@
 
 mod admin;
 mod db;
+mod google;
 mod public;
 
 use std::collections::{HashMap, VecDeque};

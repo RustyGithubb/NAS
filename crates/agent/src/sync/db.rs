@@ -47,6 +47,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let c = Connection::open(path)?;
     c.busy_timeout(std::time::Duration::from_secs(5))?;
     c.execute_batch(SCHEMA)?;
+    migrate(&c)?;
     // WorkTable, première app, inscrite d'office.
     c.execute(
         "INSERT OR IGNORE INTO apps VALUES (?1, 'WorkTable', 'Organisation de travail : notes, tâches, calendrier, mail, Blueprints', '1f5c2', 1, 1, 1, ?2, 30, ?3)",
@@ -56,6 +57,29 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         set_setting(&c, "enabled", "1");
     }
     Ok(c)
+}
+
+/// Colonnes ajoutées après la première version (une base existante les reçoit au démarrage).
+fn migrate(c: &Connection) -> rusqlite::Result<()> {
+    let has = |table: &str, col: &str| -> rusqlite::Result<bool> {
+        let mut st = c.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = st.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(names.iter().any(|n| n == col))
+    };
+    for (table, col) in [("users", "google_email"), ("users", "google_sub"), ("devices", "install_id")] {
+        if !has(table, col)? {
+            c.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} TEXT"))?;
+        }
+    }
+    c.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users (google_email) WHERE google_email IS NOT NULL;
+         CREATE UNIQUE INDEX IF NOT EXISTS devices_install ON devices (user, app, install_id) WHERE install_id IS NOT NULL;",
+    )
+}
+
+/// Identifiants de client OAuth Google acceptés (réglage, un par ligne).
+pub fn google_client_ids(c: &Connection) -> Vec<String> {
+    setting(c, "google_client_ids").unwrap_or_default().lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
 }
 
 pub fn setting(c: &Connection, key: &str) -> Option<String> {
@@ -149,10 +173,12 @@ pub struct Account {
     pub wrapped_key: Option<String>,
     pub invite_hash: Option<String>,
     pub invite_expires: Option<u64>,
+    /// Compte via Google : identifiant Google (`sub`) retenu à la première connexion.
+    pub google_sub: Option<String>,
 }
 
 pub fn account(c: &Connection, login: &str) -> Option<Account> {
-    c.query_row("SELECT id, login, active, salt, auth_hash, wrapped_key, invite_hash, invite_expires FROM users WHERE login = ?1", [login], |r| {
+    c.query_row("SELECT id, login, active, salt, auth_hash, wrapped_key, invite_hash, invite_expires, google_sub FROM users WHERE login = ?1", [login], |r| {
         Ok(Account {
             id: r.get::<_, i64>(0)? as u64,
             login: r.get(1)?,
@@ -162,11 +188,23 @@ pub fn account(c: &Connection, login: &str) -> Option<Account> {
             wrapped_key: r.get(5)?,
             invite_hash: r.get(6)?,
             invite_expires: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+            google_sub: r.get(8)?,
         })
     })
     .optional()
     .ok()
     .flatten()
+}
+
+/// Compte lié à cet e-mail Google (déjà en minuscules).
+pub fn account_by_google(c: &Connection, email: &str) -> Option<Account> {
+    let login: String = c.query_row("SELECT login FROM users WHERE google_email = ?1", [email], |r| r.get(0)).optional().ok().flatten()?;
+    account(c, &login)
+}
+
+/// Retient l'identifiant Google (`sub`) du compte à sa première connexion Google.
+pub fn set_google_sub(c: &Connection, id: u64, sub: &str) -> rusqlite::Result<usize> {
+    c.execute("UPDATE users SET google_sub = ?2 WHERE id = ?1", params![id as i64, sub])
 }
 
 pub fn account_by_id(c: &Connection, id: u64) -> Option<Account> {
@@ -175,20 +213,21 @@ pub fn account_by_id(c: &Connection, id: u64) -> Option<Account> {
 }
 
 /// Crée un compte en attente d'invitation. Renvoie son identifiant.
-pub fn add_user(c: &Connection, login: &str, salt: &str, invite_hash: &str, expires: u64) -> rusqlite::Result<u64> {
+pub fn add_user(c: &Connection, login: &str, salt: &str, invite_hash: &str, expires: u64, google_email: Option<&str>) -> rusqlite::Result<u64> {
     c.execute(
-        "INSERT INTO users (login, active, created, salt, invite_hash, invite_expires) VALUES (?1, 1, ?2, ?3, ?4, ?5)",
-        params![login, now() as i64, salt, invite_hash, expires as i64],
+        "INSERT INTO users (login, active, created, salt, invite_hash, invite_expires, google_email) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6)",
+        params![login, now() as i64, salt, invite_hash, expires as i64, google_email],
     )?;
     Ok(c.last_insert_rowid() as u64)
 }
 
 /// Nouvelle invitation : le mot de passe et les postes sont oubliés (les données restent, mais
-/// ne sont lisibles qu'avec le code de récupération).
+/// ne sont lisibles qu'avec le code de récupération). Le lien au compte Google (`google_sub`) est
+/// aussi oublié : l'adresse reste, et le prochain compte Google qui la présente sera retenu.
 pub fn reset_user(c: &Connection, id: u64, salt: &str, invite_hash: &str, expires: u64) -> rusqlite::Result<usize> {
     c.execute("DELETE FROM devices WHERE user = ?1", [id as i64])?;
     c.execute(
-        "UPDATE users SET salt = ?2, auth_hash = NULL, wrapped_key = NULL, invite_hash = ?3, invite_expires = ?4, failures = 0 WHERE id = ?1",
+        "UPDATE users SET salt = ?2, auth_hash = NULL, wrapped_key = NULL, invite_hash = ?3, invite_expires = ?4, failures = 0, google_sub = NULL WHERE id = ?1",
         params![id as i64, salt, invite_hash, expires as i64],
     )
 }
@@ -235,7 +274,7 @@ pub fn login_result(c: &Connection, id: u64, ok: bool) {
 pub fn users(c: &Connection) -> rusqlite::Result<Vec<UserInfo>> {
     let mut st = c.prepare(
         "SELECT id, login, active, auth_hash IS NULL, invite_expires, created, last_seen, failures,
-                (SELECT updated FROM avatars WHERE avatars.user = users.id)
+                (SELECT updated FROM avatars WHERE avatars.user = users.id), google_email
          FROM users ORDER BY login",
     )?;
     let rows = st.query_map([], |r| {
@@ -251,6 +290,7 @@ pub fn users(c: &Connection) -> rusqlite::Result<Vec<UserInfo>> {
             apps: Vec::new(),
             devices: Vec::new(),
             avatar: r.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+            google_email: r.get(9)?,
         })
     })?;
     let mut list = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -331,13 +371,30 @@ pub fn devices(c: &Connection, user: u64) -> rusqlite::Result<Vec<Device>> {
     rows.collect()
 }
 
-pub fn add_device(c: &Connection, user: u64, name: &str, app: &str, token_hash: &str, ip: &str) -> rusqlite::Result<u64> {
+/// Ouvre une session pour un poste. Avec `install_id`, un poste déjà connu de ce compte
+/// et de cette app reprend sa ligne (nouveau jeton) au lieu d'en créer une.
+pub fn add_device(c: &Connection, user: u64, name: &str, app: &str, install_id: Option<&str>, token_hash: &str, ip: &str) -> rusqlite::Result<u64> {
     let t = now();
+    let expires = (t + super::SESSION_S) as i64;
+    if let Some(install) = install_id {
+        let known: Option<i64> =
+            c.query_row("SELECT id FROM devices WHERE user = ?1 AND app = ?2 AND install_id = ?3", params![user as i64, app, install], |r| r.get(0)).optional()?;
+        if let Some(id) = known {
+            c.execute("UPDATE devices SET name = ?2, token_hash = ?3, last_seen = ?4, ip = ?5, expires = ?6 WHERE id = ?1", params![id, name, token_hash, t as i64, ip, expires])?;
+            return Ok(id as u64);
+        }
+    }
     c.execute(
-        "INSERT INTO devices (user, name, app, token_hash, created, last_seen, ip, expires) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
-        params![user as i64, name, app, token_hash, t as i64, ip, (t + super::SESSION_S) as i64],
+        "INSERT INTO devices (user, name, app, token_hash, created, last_seen, ip, expires, install_id) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
+        params![user as i64, name, app, token_hash, t as i64, ip, expires, install_id],
     )?;
     Ok(c.last_insert_rowid() as u64)
+}
+
+/// Déconnexion volontaire : le jeton ne vaut plus rien, mais le poste reste connu
+/// (il reprendra sa ligne à la prochaine connexion). Une révocation, elle, l'efface.
+pub fn logout_device(c: &Connection, id: u64, user: u64) -> rusqlite::Result<usize> {
+    c.execute("UPDATE devices SET token_hash = 'off-' || id, expires = 0 WHERE id = ?1 AND user = ?2", params![id as i64, user as i64])
 }
 
 /// Session d'un jeton valide : (compte, login, poste, nom du poste). Prolonge la session.

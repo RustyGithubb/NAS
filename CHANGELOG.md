@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 — 2026-11-26
+### Ajouts
+- Synchro : les comptes peuvent se connecter « via Google ». À la création (Synchro › Nouveau compte), on choisit Classique ou Via Google et on indique l'adresse Google. L'app se connecte avec Google sans code d'invitation ; le mot de passe de chiffrement reste demandé, le serveur ne lit jamais les données. L'adresse Google s'affiche dans la fiche du compte.
+- Synchro › Réglages : « Connexion Google », avec l'identifiant client Google de chaque app. Une app absente de la liste ne peut pas se connecter avec Google ; liste vide = aucune.
+- Synchro : un PC qui se reconnecte reprend son poste au lieu d'apparaître comme un nouveau poste.
+- Guide `docs/synchro-google-et-reconnexion.md` pour les apps (connexion Google, reconnexion, restauration complète des données).
+### Modifications
+- Synchro : la déconnexion depuis une app garde le poste, affiché « déconnecté » ; la révocation l'efface.
+- Synchro : réinitialiser un compte oublie aussi son compte Google lié (l'adresse reste).
+- Agent : vérifie les connexions Google avec les clés publiques de Google, téléchargées puis gardées 6 h. Le serveur doit donc pouvoir joindre googleapis.com.
+- `sync-client` (pour les apps) : connexion Google, identifiant de poste, restauration complète des données après reconnexion.
+- Compatibilité : les anciennes apps et les anciennes consoles continuent de fonctionner ; la base de l'agent reçoit ses nouvelles colonnes au démarrage. Pour la connexion Google, mettre à jour l'agent avec la console 0.2.0 (sinon pas de connexion Google).
+
 ## 0.1.1 — 2026-11-23
 ### Modifications
 - Réglages : ce n'est plus un onglet mais un panneau sur fond flouté, comme le panneau Compte, ouvert et fermé par la pilule ⚙️ (Échap ou un clic à côté le ferment). Les réglages sont en sections séparées par des filets ; le panneau laisse le même écart à gauche et à droite (16 % de la fenêtre).

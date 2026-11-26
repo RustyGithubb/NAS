@@ -62,7 +62,7 @@ Pilotage d'un Mac mini 2014 (8 Go, Debian) reconverti en serveur. Workspace Carg
 - sites/ : sites web — caddy.rs (fichier par site dans /etc/caddy/sites, sauvegardes tar + mysqldump), mock.rs
 - sampler.rs : mesures système chaque seconde (sysinfo 0.37 : ne pas monter de version sans adapter, l'API a changé)
 - network.rs : réseau du serveur (route par défaut, compteurs /sys, nmcli, ip, ping vers la box et 1.1.1.1, coupures lues dans le journal de NetworkManager et wpa_supplicant, test de débit avec curl) ; simulé hors du Mac. Route `/api/network` ajoutée sans changer la version du protocole (404 = agent trop ancien)
-- sync/ : synchronisation des apps — mod.rs (dossiers, purge, sauvegarde, limite de demandes), db.rs (SQLite : apps, comptes, accès, postes, documents), public.rs (`/sync/…`, sessions des comptes, traitées avant la clé dans `handle()`), admin.rs (`/api/sync/…`). Types : `nas_proto::sync`
+- sync/ : synchronisation des apps — mod.rs (dossiers, purge, sauvegarde, limite de demandes), db.rs (SQLite : apps, comptes, accès, postes, documents), public.rs (`/sync/…`, sessions des comptes, traitées avant la clé dans `handle()`), admin.rs (`/api/sync/…`), google.rs (vérification des jetons d'identité Google : clés publiques téléchargées avec curl, crate rsa). Types : `nas_proto::sync`. Intégration dans une app : docs/synchro-google-et-reconnexion.md
 - update.rs : recherche de mise à jour (lance le service `nas-agent-update`, lit /var/lib/nas-agent/update.json)
 - Routes et types JSON : `crates/proto/src/lib.rs`
 

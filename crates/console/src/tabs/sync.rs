@@ -36,6 +36,11 @@ pub struct State {
     /// Nouveau compte : identifiant et apps cochées.
     new_login: String,
     new_apps: Vec<String>,
+    /// Nouveau compte via Google : e-mail du compte Google à lier.
+    new_google: bool,
+    new_google_email: String,
+    /// Identifiants de client OAuth Google en cours de saisie, un par ligne (`None` : ceux du serveur).
+    google_ids: Option<String>,
     /// Confirmation d'une action destructrice : ce qu'il faut retaper.
     confirm: Option<Confirm>,
     /// Adresse publique en cours de saisie (`None` : celle du serveur).
@@ -262,6 +267,8 @@ fn sidebar(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview) {
     if widgets::nav_row(ui, t!("+ Nouveau compte", "+ New account"), None, st.sel == Sel::NewUser, widgets::Tone::Normal, &mut hl, None).clicked() {
         st.sel = Sel::NewUser;
         st.new_login.clear();
+        st.new_google = false;
+        st.new_google_email.clear();
         st.new_apps = ov.apps.iter().filter(|a| a.builtin).map(|a| a.id.clone()).collect();
         st.confirm = None;
     }
@@ -371,6 +378,31 @@ fn overview(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, b
             }
             ui.add(egui::TextEdit::singleline(domain).hint_text("sync.exemple.fr").desired_width(220.0).font(egui::TextStyle::Monospace));
         });
+        separator(ui);
+        row(
+            ui,
+            t!("Connexion Google", "Google sign-in"),
+            t!(
+                "ID client OAuth de chaque app (Google Cloud), un par ligne. Vide : connexion Google refusée",
+                "OAuth client ID of each app (Google Cloud), one per line. Empty: Google sign-in refused"
+            ),
+            |ui| {
+                let saved = ov.settings.google_client_ids.join("\n");
+                let ids = st.google_ids.get_or_insert_with(|| saved.clone());
+                let changed = ids.trim() != saved;
+                if ui.add_enabled(changed && !busy, egui::Button::new(t!("Enregistrer", "Save"))).clicked() {
+                    let list: Vec<&str> = ids.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                    server.sync_action(
+                        "/api/sync/settings",
+                        Some(json!({ "enabled": ov.settings.enabled, "domain": ov.settings.domain, "google_client_ids": list })),
+                        t!("Connexion Google enregistrée.", "Google sign-in saved.").into(),
+                    );
+                    st.google_ids = None;
+                    return;
+                }
+                ui.add(egui::TextEdit::multiline(ids).hint_text("123-abc.apps.googleusercontent.com").desired_rows(2).desired_width(320.0).font(egui::TextStyle::Monospace));
+            },
+        );
         separator(ui);
         row(ui, t!("Données", "Data"), t!("Base des comptes et versions chiffrées", "Accounts database and encrypted versions"), |ui| {
             ui.label(RichText::new(&ov.dir).monospace().color(theme::TEXT_MUTED()));
@@ -623,6 +655,12 @@ fn user_page(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, 
             };
             ui.label(RichText::new(text).color(color));
         });
+        if let Some(email) = &u.google_email {
+            separator(ui);
+            row(ui, t!("Compte Google", "Google account"), t!("Connexion avec Google dans l'app", "Sign in with Google in the app"), |ui| {
+                ui.label(RichText::new(email).monospace().color(theme::TEXT()));
+            });
+        }
         separator(ui);
         row(ui, t!("Dernière connexion", "Last sign-in"), &tf!("Compte créé le {}", "Account created {}", date(u.created)), |ui| {
             ui.label(u.last_seen.map(|t| ago(t as i64 * 1000)).unwrap_or_else(|| t!("jamais", "never").into()));
@@ -709,7 +747,11 @@ fn user_page(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, 
                     }
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&d.name).color(theme::TEXT()));
-                        let detail = tf!("{} · {} · connecté le {}", "{} · {} · signed in {}", app.map(|a| a.name.as_str()).unwrap_or(&d.app), d.ip, date(d.created));
+                        let mut detail = tf!("{} · {} · connecté le {}", "{} · {} · signed in {}", app.map(|a| a.name.as_str()).unwrap_or(&d.app), d.ip, date(d.created));
+                        // Déconnecté depuis l'app : le poste reste connu pour sa reconnexion.
+                        if d.expires <= now_s() {
+                            detail.push_str(t!(" · déconnecté", " · signed out"));
+                        }
                         ui.label(RichText::new(detail).small().color(theme::TEXT_FAINT()));
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -730,8 +772,8 @@ fn user_page(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, 
             ui,
             t!("Nouveau code d'invitation", "New invitation code"),
             t!(
-                "Mot de passe oublié : déconnecte tous les postes. Les données restent, lisibles avec le code de récupération",
-                "Forgotten password: signs out every device. Data stays, readable with the recovery code"
+                "Mot de passe oublié ou autre compte Google : déconnecte tous les postes et oublie le compte Google lié (l'adresse reste). Les données restent, lisibles avec le code de récupération",
+                "Forgotten password or another Google account: signs out every device and forgets the linked Google account (the address stays). Data stays, readable with the recovery code"
             ),
             |ui| {
                 if ui.add_enabled(!busy, egui::Button::new(t!("Réinitialiser", "Reset"))).clicked() {
@@ -772,6 +814,16 @@ fn new_user(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, b
             ui.add(egui::TextEdit::singleline(&mut st.new_login).hint_text("dorian").desired_width(220.0).font(egui::TextStyle::Monospace));
         });
         separator(ui);
+        row(ui, t!("Connexion", "Sign-in"), t!("Via Google : lié à un compte Google existant", "Via Google: linked to an existing Google account"), |ui| {
+            widgets::segmented(ui, "sync_new_google", &[(false, t!("Classique", "Classic")), (true, t!("Via Google", "Via Google"))], &mut st.new_google);
+        });
+        if st.new_google {
+            separator(ui);
+            row(ui, t!("Adresse Google", "Google address"), t!("Celle du compte Google de la personne", "The person's Google account address"), |ui| {
+                ui.add(egui::TextEdit::singleline(&mut st.new_google_email).hint_text("prenom@gmail.com").desired_width(220.0).font(egui::TextStyle::Monospace));
+            });
+        }
+        separator(ui);
         ui.label(t!("Apps autorisées", "Allowed apps"));
         ui.add_space(4.0);
         for a in &ov.apps {
@@ -790,18 +842,25 @@ fn new_user(ui: &mut egui::Ui, st: &mut State, server: &Server, ov: &Overview, b
             });
         }
         ui.add_space(12.0);
-        ui.label(
-            RichText::new(t!(
+        let hint = if st.new_google {
+            t!(
+                "Au premier accès, la personne clique « Se connecter avec Google » dans l'app (pas besoin du code) et choisit un mot de passe de chiffrement : il ne passe jamais par le serveur. Le code d'invitation reste valable 48 h en secours.",
+                "On first access, the person clicks “Sign in with Google” in the app (no code needed) and picks an encryption password: it never goes through the server. The invitation code stays valid 48 h as a fallback."
+            )
+        } else {
+            t!(
                 "La console donne un code d'invitation (valable 48 h). Au premier login dans l'app, la personne choisit son mot de passe : il ne passe jamais par le serveur.",
                 "The console gives an invitation code (valid 48 h). On first sign-in in the app, the person picks a password: it never goes through the server."
-            ))
-            .color(theme::TEXT_MUTED()),
-        );
+            )
+        };
+        ui.label(RichText::new(hint).color(theme::TEXT_MUTED()));
         ui.add_space(8.0);
         let login = st.new_login.trim().to_lowercase();
-        let valid = nas_proto::sync::valid_login(&login);
+        let email = st.new_google_email.trim().to_lowercase();
+        let valid = nas_proto::sync::valid_login(&login) && (!st.new_google || email.contains('@'));
         if ui.add_enabled(valid && !busy, egui::Button::new(t!("Créer et obtenir le code", "Create and get the code"))).clicked() {
-            server.sync_invite("/api/sync/users", Some(json!({ "login": login, "apps": st.new_apps })));
+            let google = if st.new_google { Some(email) } else { None };
+            server.sync_invite("/api/sync/users", Some(json!({ "login": login, "apps": st.new_apps, "google_email": google })));
         }
     });
 }

@@ -43,6 +43,11 @@ pub fn admin(sync: Option<&Sync>, post: bool, parts: &[&str], body: &[u8]) -> Re
             let db = s.db();
             db::set_setting(&db, "enabled", if v.enabled { "1" } else { "0" });
             db::set_setting(&db, "domain", v.domain.trim());
+            // Console plus ancienne (champ absent) : on garde la liste en place.
+            if serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|b| b.get("google_client_ids").is_some()) {
+                let ids: Vec<&str> = v.google_client_ids.iter().map(|i| i.trim()).filter(|i| !i.is_empty()).collect();
+                db::set_setting(&db, "google_client_ids", &ids.join("\n"));
+            }
         })),
         (true, ["backup"]) => done(s.backup()),
         (true, ["apps"]) => done(parse::<AppForm>(body).and_then(|f| {
@@ -143,14 +148,19 @@ fn new_user(s: &Sync, body: &[u8]) -> Invitation {
     if !proto::valid_login(&login) {
         return invitation(false, "identifiant invalide : 2 à 32 caractères a-z, 0-9, « . », « _ » ou « - »");
     }
+    let google = n.google_email.as_deref().map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty());
+    if google.as_deref().is_some_and(|e| !valid_email(e)) {
+        return invitation(false, "adresse Google invalide");
+    }
     let code = invite_code();
     let expires = now() + INVITE_S;
     let db = s.db();
     if db::account(&db, &login).is_some() {
         return invitation(false, "ce compte existe déjà");
     }
-    let id = match db::add_user(&db, &login, &hex(&random(16)), &hex(&sha256(code.as_bytes())), expires) {
+    let id = match db::add_user(&db, &login, &hex(&random(16)), &hex(&sha256(code.as_bytes())), expires, google.as_deref()) {
         Ok(id) => id,
+        Err(e) if e.to_string().contains("UNIQUE") => return invitation(false, "cette adresse Google est déjà liée à un compte"),
         Err(e) => return invitation(false, e.to_string()),
     };
     for app in &n.apps {
@@ -159,6 +169,11 @@ fn new_user(s: &Sync, body: &[u8]) -> Invitation {
         }
     }
     Invitation { ok: true, message: String::new(), user_id: id, login, code, expires }
+}
+
+/// Contrôle simple d'une adresse e-mail (Google vérifie le reste à la connexion).
+fn valid_email(e: &str) -> bool {
+    e.len() <= 254 && !e.contains(char::is_whitespace) && e.split_once('@').is_some_and(|(a, d)| !a.is_empty() && d.contains('.') && !d.contains('@'))
 }
 
 fn reset(s: &Sync, id: &str) -> Invitation {
@@ -175,7 +190,11 @@ fn reset(s: &Sync, id: &str) -> Invitation {
 
 fn overview(s: &Sync) -> Overview {
     let db = s.db();
-    let settings = Settings { enabled: db::setting(&db, "enabled").as_deref() == Some("1"), domain: db::setting(&db, "domain").unwrap_or_default() };
+    let settings = Settings {
+        enabled: db::setting(&db, "enabled").as_deref() == Some("1"),
+        domain: db::setting(&db, "domain").unwrap_or_default(),
+        google_client_ids: db::google_client_ids(&db),
+    };
     let apps = db::apps(&db).unwrap_or_default();
     let users = db::users(&db).unwrap_or_default();
     let last_backup = db::setting(&db, "last_backup").and_then(|v| v.parse().ok());
