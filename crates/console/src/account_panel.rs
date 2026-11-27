@@ -13,6 +13,8 @@ use nas_proto::UpdateState;
 
 /// Largeur des intitulés des champs protégés.
 const LABEL_W: f32 = 130.0;
+/// Rayon de l'image du serveur dans l'en-tête (même taille que le compte dans WorkTable).
+const AVATAR_R: f32 = 48.0;
 
 #[derive(Default)]
 pub struct AccountPanel {
@@ -167,21 +169,18 @@ impl AccountPanel {
                 ui.multiply_opacity(k);
                 overlay_frame().show(ui, |ui| {
                     ui.set_width(w - 28.0);
-                    // En-tête : image du serveur et nom déclaré par l'agent.
-                    ui.horizontal(|ui| {
-                        let (r, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
-                        paint_identity(ui.painter(), r.center(), 28.0, &name);
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            ui.add_space(6.0);
-                            ui.label(RichText::new(t!("Compte", "Account")).small().color(theme::TEXT_FAINT()));
-                            let title = if name.is_empty() { t!("Serveur inconnu", "Unknown server").to_string() } else { name.clone() };
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(title).font(theme::title_font(18.0)).color(theme::TEXT()));
-                                let (r, _) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::hover());
-                                paint_dot(ui.painter(), r.center(), link);
-                            });
-                        });
+                    // En-tête centré, comme WorkTable : image du serveur en grand (pastille d'état
+                    // de la liaison en bas à droite), nom déclaré par l'agent, état en dessous.
+                    ui.vertical_centered(|ui| {
+                        let (r, _) = ui.allocate_exact_size(vec2(2.0 * AVATAR_R, 2.0 * AVATAR_R), Sense::hover());
+                        paint_identity(ui.painter(), r.center(), AVATAR_R, &name);
+                        let dot = r.center() + vec2(AVATAR_R, AVATAR_R) * std::f32::consts::FRAC_1_SQRT_2;
+                        ui.painter().circle_filled(dot, 9.0, theme::SURFACE());
+                        paint_dot(ui.painter(), dot, link);
+                        ui.add_space(10.0);
+                        let title = if name.is_empty() { t!("Serveur inconnu", "Unknown server").to_string() } else { name.clone() };
+                        ui.label(RichText::new(title).font(theme::title_font(26.0)).color(theme::TEXT()));
+                        ui.label(RichText::new(link_text(link)).color(theme::TEXT_MUTED()));
                     });
                     rule(ui);
                     // Étiré vers le bas : même écart sous le panneau qu'au-dessus, quelle que soit la
